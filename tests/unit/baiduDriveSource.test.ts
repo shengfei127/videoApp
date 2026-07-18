@@ -77,6 +77,36 @@ describe('BaiduDriveSource videolist', () => {
     expect(JSON.stringify(videos)).not.toContain('sentinel-thumb-token')
   })
 
+  it.each([
+    '#Access_Token=sentinel-fragment-token',
+    '#access%5Ftoken=sentinel-encoded-fragment-token',
+    '#credential=sentinel-fragment-credential'
+  ])(
+    'rejects a credential-bearing thumbnail fragment and uses the safe fallback: %s',
+    async (fragment) => {
+      const transport = vi.fn().mockResolvedValue({
+        errno: 0,
+        info: [
+          {
+            ...videoRecord(43, '/apps/片刻/fragment.mp4'),
+            thumbs: {
+              url1: 'https://thumb.example/safe.jpg',
+              url9: `https://thumb.example/unsafe.jpg${fragment}`
+            }
+          }
+        ]
+      })
+      const source = new BaiduDriveSource('/apps/片刻', transport)
+
+      const videos = await source.listPage('token', 1)
+
+      expect(videos[0]?.thumbnailUrl).toBe(
+        'https://thumb.example/safe.jpg'
+      )
+      expect(JSON.stringify(videos)).not.toContain('sentinel')
+    }
+  )
+
   it('accepts a safe name fallback and missing optional metadata', async () => {
     const transport = vi.fn().mockResolvedValue({
       errno: 0,
@@ -132,6 +162,26 @@ describe('BaiduDriveSource videolist', () => {
 
     expect(videos.map((video) => video.id)).toEqual(['baidu:1'])
   })
+
+  it.each(unsafeEncodedProviderPaths)(
+    'discards an ambiguous encoded provider path: %s',
+    async (path) => {
+      const transport = vi.fn().mockResolvedValue({
+        errno: 0,
+        info: [
+          videoRecord(1, '/apps/片刻/安全 100% 完成.mp4'),
+          videoRecord(2, path)
+        ]
+      })
+      const source = new BaiduDriveSource('/apps/片刻', transport)
+
+      const videos = await source.listPage('token', 1)
+
+      expect(videos.map((video) => video.path)).toEqual([
+        '/apps/片刻/安全 100% 完成.mp4'
+      ])
+    }
+  )
 
   it.each([
     '/',
@@ -233,6 +283,34 @@ describe('BaiduDriveSource videolist', () => {
 })
 
 describe('BaiduDriveSource filemetas playback', () => {
+  it.each(unsafeEncodedProviderPaths)(
+    'rejects an ambiguous encoded filemetas path: %s',
+    async (path) => {
+      const transport = vi.fn().mockResolvedValue({
+        errno: 0,
+        list: [
+          {
+            fs_id: 7,
+            path,
+            dlink: 'https://d.pcs.baidu.com/file/encoded-path'
+          }
+        ]
+      })
+      const source = new BaiduDriveSource('/apps/片刻', transport)
+
+      const error = await captureSourceRejection(
+        source.resolvePlaybackUrl('current-token', 7)
+      )
+
+      expect(error).toMatchObject({
+        kind: 'response',
+        code: 'INVALID_RESPONSE',
+        diagnostics: {}
+      })
+      expect(JSON.stringify(error)).not.toContain(path)
+    }
+  )
+
   it('requests one fresh dlink per call and applies only the current token', async () => {
     const transport = vi
       .fn()
@@ -356,6 +434,61 @@ describe('BaiduDriveSource filemetas playback', () => {
     expect(url.protocol).toBe('https:')
     expect(url.searchParams.get('access_token')).toBe(accessToken)
   })
+
+  it.each([
+    [
+      'one mismatched extra record',
+      [
+        {
+          fs_id: 8,
+          path: '/apps/片刻/extra.mp4',
+          dlink: 'https://d.pcs.baidu.com/file/extra'
+        }
+      ]
+    ],
+    ['one malformed extra record', [null]],
+    [
+      'duplicated extra records',
+      [
+        {
+          fs_id: 8,
+          path: '/apps/片刻/extra.mp4',
+          dlink: 'https://d.pcs.baidu.com/file/extra'
+        },
+        {
+          fs_id: 8,
+          path: '/apps/片刻/extra.mp4',
+          dlink: 'https://d.pcs.baidu.com/file/extra'
+        }
+      ]
+    ]
+  ] as const)(
+    'rejects filemetas with %s',
+    async (_case, extras) => {
+      const transport = vi.fn().mockResolvedValue({
+        errno: 0,
+        list: [
+          {
+            fs_id: 7,
+            path: '/apps/片刻/movie.mp4',
+            dlink: 'https://d.pcs.baidu.com/file/valid'
+          },
+          ...extras
+        ]
+      })
+      const source = new BaiduDriveSource('/apps/片刻', transport)
+
+      const error = await captureSourceRejection(
+        source.resolvePlaybackUrl('current-token', 7)
+      )
+
+      expect(error).toMatchObject({
+        kind: 'response',
+        code: 'INVALID_RESPONSE',
+        diagnostics: {}
+      })
+    }
+  )
 
   it.each([
     [
@@ -494,6 +627,20 @@ function videoRecord(fsId: number, path: string) {
     duration: 42
   }
 }
+
+const unsafeEncodedProviderPaths = [
+  '/apps/片刻/%2e%2e/其他/movie.mp4',
+  '/apps/片刻/%2E%2E/其他/movie.mp4',
+  '/apps/片刻/folder%2fother/movie.mp4',
+  '/apps/片刻/folder%2Fother/movie.mp4',
+  '/apps/片刻/folder%5cother/movie.mp4',
+  '/apps/片刻/folder%5Cother/movie.mp4',
+  '/apps/片刻/%252e%252e/其他/movie.mp4',
+  '/apps/片刻/%252E%252E/其他/movie.mp4',
+  '/apps/片刻/malformed%2/movie.mp4',
+  '/apps/片刻/query?.mp4',
+  '/apps/片刻/fragment#.mp4'
+] as const
 
 async function captureSourceRejection(
   promise: Promise<unknown>

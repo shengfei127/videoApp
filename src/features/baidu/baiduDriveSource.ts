@@ -99,19 +99,14 @@ export class BaiduDriveSource {
         needmedia: 1
       })
       const list = readProviderArray(response, 'list')
-      const matches = list.filter(
-        (candidate) =>
-          isRecord(candidate) &&
-          normalizeFsId(candidate.fs_id) === normalizedFsId
-      )
-
-      if (matches.length !== 1) {
+      if (list.length !== 1) {
         throw toBaiduResponseError()
       }
 
-      const entry = matches[0]
+      const entry = list[0]
       if (
         !isRecord(entry) ||
+        normalizeFsId(entry.fs_id) !== normalizedFsId ||
         typeof entry.path !== 'string' ||
         !isPathWithinRoot(entry.path, this.root) ||
         typeof entry.dlink !== 'string'
@@ -265,6 +260,9 @@ function isPathWithinRoot(path: string, root: string): boolean {
   if (
     CONTROL_CHARACTER.test(path) ||
     path.includes('\\') ||
+    path.includes('?') ||
+    path.includes('#') ||
+    hasAmbiguousPercentEscape(path) ||
     (path !== root && !path.startsWith(`${root}/`))
   ) {
     return false
@@ -274,6 +272,21 @@ function isPathWithinRoot(path: string, root: string): boolean {
   return segments.every(
     (segment) => Boolean(segment) && segment !== '.' && segment !== '..'
   )
+}
+
+function hasAmbiguousPercentEscape(path: string): boolean {
+  for (let index = 0; index < path.length; index += 1) {
+    if (path[index] !== '%') {
+      continue
+    }
+
+    const next = path[index + 1]
+    if (next !== undefined && /[0-9A-F]/iu.test(next)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 interface OptionalNumber {
@@ -382,6 +395,7 @@ function isSafeThumbnailUrl(value: string): boolean {
       url.protocol === 'https:' &&
       !url.username &&
       !url.password &&
+      !url.hash &&
       !Array.from(url.searchParams.keys()).some(
         (key) => key.toLowerCase() === 'access_token'
       )
