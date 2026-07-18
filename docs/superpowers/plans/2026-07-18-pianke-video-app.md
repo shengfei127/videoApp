@@ -312,7 +312,8 @@ export function createApp() {
 
 ~~~vue
 <!-- src/App.vue -->
-<script setup lang="ts">
+<script lang="ts">
+export default {}
 </script>
 
 <style lang="scss">
