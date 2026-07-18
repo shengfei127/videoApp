@@ -257,6 +257,32 @@ describe('DirectLinkService', () => {
     expect(new DirectLinkService(storage).list()).toEqual([])
   })
 
+  it('drops an invalid media kind while preserving valid persisted records', () => {
+    const storage = createMemoryStorage()
+    storage.write<unknown>(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'invalid-kind',
+        name: 'Invalid kind',
+        url: 'https://cdn.example.test/invalid.mp4',
+        mediaKind: 'webm',
+        addedAt: 2000
+      },
+      {
+        id: 'valid-kind',
+        name: 'Valid kind',
+        url: 'https://cdn.example.test/valid.mp4',
+        mediaKind: 'mp4',
+        addedAt: 1000
+      }
+    ])
+
+    expect(
+      new DirectLinkService(storage)
+        .list()
+        .map(({ id, mediaKind }) => ({ id, mediaKind }))
+    ).toEqual([{ id: 'valid-kind', mediaKind: 'mp4' }])
+  })
+
   it('removes only the requested record and clears only direct-link storage', () => {
     const storage = createMemoryStorage()
     const service = new DirectLinkService(storage, {
