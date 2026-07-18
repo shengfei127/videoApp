@@ -6,6 +6,7 @@ export interface OpenOAuthWebviewOptions {
   redirectUri: string
   mockMode?: boolean
   onCallback: (callbackUrl: string) => void | Promise<void>
+  clearPendingState: () => void
   onCancel?: () => void
   onCallbackFailure?: () => void
 }
@@ -106,7 +107,11 @@ function openAppOAuthWebview(
 
     settled = true
     release()
-    options.onCancel?.()
+    if (!clearPendingStateSafely(options)) {
+      return
+    }
+
+    notifyCancellationSafely(options)
   }
 
   handle = {
@@ -116,8 +121,11 @@ function openAppOAuthWebview(
         return
       }
 
-      cancel()
-      safeClose(webview)
+      try {
+        cancel()
+      } finally {
+        safeClose(webview)
+      }
     }
   }
 
@@ -137,9 +145,14 @@ function openAppOAuthWebview(
 
       settled = true
       release()
+      if (!clearPendingStateSafely(options)) {
+        safeClose(webview)
+        return
+      }
+
       Promise.resolve()
         .then(() => options.onCallback(event.url))
-        .catch(() => options.onCallbackFailure?.())
+        .catch(() => notifyCallbackFailureSafely(options))
         .finally(() => safeClose(webview))
     }
   )
@@ -175,20 +188,29 @@ function openH5OAuthMock(
 
       settled = true
       release()
-      options.onCancel?.()
+      if (!clearPendingStateSafely(options)) {
+        return
+      }
+
+      notifyCancellationSafely(options)
     }
   }
 
-  Promise.resolve().then(() => {
-    if (settled) {
-      return
-    }
+  Promise.resolve()
+    .then(() => {
+      if (settled) {
+        return
+      }
 
-    settled = true
-    release()
-    return Promise.resolve(options.onCallback(createMockCallbackUrl(options)))
-      .catch(() => options.onCallbackFailure?.())
-  })
+      settled = true
+      release()
+      if (!clearPendingStateSafely(options)) {
+        return
+      }
+
+      return options.onCallback(createMockCallbackUrl(options))
+    })
+    .catch(() => notifyCallbackFailureSafely(options))
 
   return handle
 }
@@ -227,5 +249,31 @@ function safeClose(webview: AppOAuthWebview): void {
     webview.close('slide-out-right')
   } catch {
     // Closing is best-effort during lifecycle cleanup.
+  }
+}
+
+function clearPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
+  try {
+    options.clearPendingState()
+    return true
+  } catch {
+    notifyCallbackFailureSafely(options)
+    return false
+  }
+}
+
+function notifyCancellationSafely(options: OpenOAuthWebviewOptions): void {
+  try {
+    options.onCancel?.()
+  } catch {
+    notifyCallbackFailureSafely(options)
+  }
+}
+
+function notifyCallbackFailureSafely(options: OpenOAuthWebviewOptions): void {
+  try {
+    options.onCallbackFailure?.()
+  } catch {
+    // User callbacks never escape lifecycle cleanup or expose their details.
   }
 }

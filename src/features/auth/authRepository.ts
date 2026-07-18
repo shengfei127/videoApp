@@ -62,7 +62,7 @@ export class AuthRepository {
       !Number.isSafeInteger(now) ||
       now < 0 ||
       pending.createdAt > now ||
-      now - pending.createdAt > OAUTH_PENDING_MAX_AGE_MS
+      now - pending.createdAt >= OAUTH_PENDING_MAX_AGE_MS
     ) {
       return null
     }

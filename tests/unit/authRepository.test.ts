@@ -122,12 +122,21 @@ describe('AuthRepository pending OAuth state', () => {
     expect(storage.read(OAUTH_PENDING_STORAGE_KEY, null)).toBeNull()
   })
 
-  it('accepts a pending state at the ten-minute boundary', () => {
+  it('expires a pending state at the ten-minute boundary', () => {
     const repository = new AuthRepository(createMemoryStorage())
     repository.createPending('state-123', 1000)
 
     expect(
       repository.consumePending(1000 + OAUTH_PENDING_MAX_AGE_MS)
+    ).toBeNull()
+  })
+
+  it('accepts a pending state one millisecond before ten minutes', () => {
+    const repository = new AuthRepository(createMemoryStorage())
+    repository.createPending('state-123', 1000)
+
+    expect(
+      repository.consumePending(1000 + OAUTH_PENDING_MAX_AGE_MS - 1)
     ).toEqual({ state: 'state-123', createdAt: 1000 })
   })
 
