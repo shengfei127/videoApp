@@ -6,6 +6,11 @@ export interface RuntimeConfig {
   useMocks: boolean
 }
 
+export interface RuntimeBuildEnvironment {
+  uniPlatform?: string
+  nodeEnv?: string
+}
+
 const DEFAULT_BAIDU_FOLDER = '片刻'
 const DEFAULT_BAIDU_REDIRECT_URI = 'https://localhost/pianke/oauth/baidu'
 const SAFE_FOLDER_SEGMENT = /^[\p{L}\p{N} _-]{1,20}$/u
@@ -32,7 +37,8 @@ function parseBaiduRedirectUri(rawRedirectUri: string | undefined): string {
 }
 
 export function parseRuntimeConfig(
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  buildEnvironment: RuntimeBuildEnvironment = readRuntimeBuildEnvironment()
 ): RuntimeConfig {
   const baiduAppFolder = parseBaiduAppFolder(env.VITE_BAIDU_APP_FOLDER)
 
@@ -41,7 +47,27 @@ export function parseRuntimeConfig(
     baiduAppFolder,
     baiduRoot: `/apps/${baiduAppFolder}`,
     baiduRedirectUri: parseBaiduRedirectUri(env.VITE_BAIDU_REDIRECT_URI),
-    useMocks: env.VITE_USE_MOCKS === 'true'
+    useMocks:
+      env.VITE_USE_MOCKS === 'true' &&
+      isH5DevelopmentBuild(buildEnvironment)
+  }
+}
+
+export function isH5DevelopmentBuild(
+  environment: RuntimeBuildEnvironment
+): boolean {
+  return (
+    environment.uniPlatform === 'h5' &&
+    environment.nodeEnv === 'development'
+  )
+}
+
+export function readRuntimeBuildEnvironment(): RuntimeBuildEnvironment {
+  return {
+    uniPlatform:
+      typeof process !== 'undefined' ? process.env.UNI_PLATFORM : undefined,
+    nodeEnv:
+      typeof process !== 'undefined' ? process.env.NODE_ENV : undefined
   }
 }
 

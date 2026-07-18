@@ -72,4 +72,36 @@ describe('parseRuntimeConfig', () => {
       }).baiduRedirectUri
     ).toBe('https://localhost/pianke/oauth/baidu')
   })
+
+  it('enables explicit mocks only for an H5 development build', () => {
+    expect(
+      parseRuntimeConfig(
+        { VITE_USE_MOCKS: 'true' },
+        { uniPlatform: 'h5', nodeEnv: 'development' }
+      ).useMocks
+    ).toBe(true)
+    expect(
+      parseRuntimeConfig(
+        { VITE_USE_MOCKS: 'false' },
+        { uniPlatform: 'h5', nodeEnv: 'development' }
+      ).useMocks
+    ).toBe(false)
+  })
+
+  it.each([
+    ['H5 production', { uniPlatform: 'h5', nodeEnv: 'production' }],
+    ['App development', { uniPlatform: 'app-plus', nodeEnv: 'development' }],
+    ['App production', { uniPlatform: 'app-plus', nodeEnv: 'production' }],
+    ['missing platform', { nodeEnv: 'development' }],
+    ['unknown platform', { uniPlatform: 'unknown', nodeEnv: 'development' }],
+    ['missing mode', { uniPlatform: 'h5' }],
+    ['test mode', { uniPlatform: 'h5', nodeEnv: 'test' }]
+  ] as const)('keeps mocks disabled for %s', (_case, buildEnvironment) => {
+    expect(
+      parseRuntimeConfig(
+        { VITE_USE_MOCKS: 'true' },
+        buildEnvironment
+      ).useMocks
+    ).toBe(false)
+  })
 })

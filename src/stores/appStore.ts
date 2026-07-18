@@ -1,7 +1,11 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { runtimeConfig, type RuntimeConfig } from '@/config/runtime'
+import {
+  runtimeConfig,
+  type RuntimeBuildEnvironment,
+  type RuntimeConfig
+} from '@/config/runtime'
 import type {
   BaiduAuthSession,
   DirectVideoRecord,
@@ -90,6 +94,7 @@ export interface AppStoreDependencies {
   now: () => number
   bootstrapMocks?: MockBootstrapper
   mockScenario?: string
+  mockEnvironment?: RuntimeBuildEnvironment
 }
 
 export function createAppStore(
@@ -238,6 +243,9 @@ export function createAppStore(
           )(dependencies.config, {
             ...(dependencies.mockScenario !== undefined
               ? { scenario: dependencies.mockScenario }
+              : {}),
+            ...(dependencies.mockEnvironment !== undefined
+              ? { environment: dependencies.mockEnvironment }
               : {})
           })
 
@@ -636,7 +644,9 @@ const runtimeDependencies: AppStoreDependencies = {
   authRepository: new AuthRepository(uniStorage),
   directLinkService: new DirectLinkService(uniStorage),
   progressRepository: new ProgressRepository(uniStorage),
-  catalogCache: new CatalogCache(uniStorage),
+  catalogCache: new CatalogCache(uniStorage, {
+    root: runtimeConfig.baiduRoot
+  }),
   baiduDriveSource: new BaiduDriveSource(runtimeConfig.baiduRoot),
   config: runtimeConfig,
   now: Date.now,

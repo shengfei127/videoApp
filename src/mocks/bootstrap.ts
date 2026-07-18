@@ -1,4 +1,9 @@
-import type { RuntimeConfig } from '@/config/runtime'
+import {
+  isH5DevelopmentBuild,
+  readRuntimeBuildEnvironment,
+  type RuntimeBuildEnvironment,
+  type RuntimeConfig
+} from '@/config/runtime'
 import {
   MOCK_SCENARIO_NAMES,
   createMockFixture,
@@ -9,6 +14,7 @@ import {
 export interface BootstrapMocksOptions {
   scenario?: string
   search?: string
+  environment?: RuntimeBuildEnvironment
 }
 
 const DEFAULT_SCENARIO: MockScenarioName = 'library'
@@ -19,6 +25,17 @@ export function bootstrapMocks(
   options: BootstrapMocksOptions = {}
 ): MockBootstrapData | null {
   if (!config.useMocks) {
+    return null
+  }
+
+  let environment: RuntimeBuildEnvironment
+  try {
+    environment = options.environment ?? readRuntimeBuildEnvironment()
+  } catch {
+    return null
+  }
+
+  if (!isH5DevelopmentBuild(environment)) {
     return null
   }
 

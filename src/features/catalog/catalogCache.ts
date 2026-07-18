@@ -7,6 +7,7 @@ export const CATALOG_REFRESH_COOLDOWN_MS = 60 * 1000
 
 const UINT64_MAX = '18446744073709551615'
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/u
+const SAFE_APP_ROOT = /^\/apps\/[\p{L}\p{N} _-]{1,20}$/u
 const RECORD_KEYS = new Set(['videos', 'savedAt', 'requestStartedAt'])
 const VIDEO_KEYS = new Set([
   'id',
@@ -30,6 +31,11 @@ export type CatalogRequestStartResult =
   | { started: false; reason: 'cooldown'; retryAt: number }
   | { started: false; reason: 'invalid-clock' }
 
+export interface CatalogCacheOptions {
+  root: string
+  now?: () => number
+}
+
 interface PersistedCatalogCache {
   videos: VideoItem[]
   savedAt?: number
@@ -37,10 +43,20 @@ interface PersistedCatalogCache {
 }
 
 export class CatalogCache {
+  private readonly root: string
+  private readonly now: () => number
+
   constructor(
     private readonly storage: KeyValueStorage,
-    private readonly now: () => number = Date.now
-  ) {}
+    options: CatalogCacheOptions
+  ) {
+    if (!options || !isSafeAppRoot(options.root)) {
+      throw new Error('Catalog cache root is invalid')
+    }
+
+    this.root = options.root
+    this.now = options.now ?? Date.now
+  }
 
   load(): CatalogCacheSnapshot | null {
     const record = this.readRecord()
@@ -112,7 +128,7 @@ export class CatalogCache {
       throw new Error('Catalog cache clock is invalid')
     }
 
-    const sanitizedVideos = sanitizeVideos(videos, false)
+    const sanitizedVideos = sanitizeVideos(videos, false, this.root)
     if (!sanitizedVideos) {
       throw new Error('Catalog cache videos are invalid')
     }
@@ -140,7 +156,7 @@ export class CatalogCache {
     }
 
     const stored = this.storage.read<unknown>(CATALOG_CACHE_KEY, null)
-    const record = validateRecord(stored, now)
+    const record = validateRecord(stored, now, this.root)
 
     if (!record) {
       this.storage.remove(CATALOG_CACHE_KEY)
@@ -153,7 +169,8 @@ export class CatalogCache {
 
 function validateRecord(
   value: unknown,
-  now: number
+  now: number,
+  root: string
 ): PersistedCatalogCache | null {
   if (
     !isRecord(value) ||
@@ -163,7 +180,7 @@ function validateRecord(
     return null
   }
 
-  const videos = sanitizeVideos(value.videos, true)
+  const videos = sanitizeVideos(value.videos, true, root)
   if (!videos) {
     return null
   }
@@ -194,13 +211,14 @@ function validateRecord(
 
 function sanitizeVideos(
   values: readonly unknown[],
-  rejectUnknownKeys: boolean
+  rejectUnknownKeys: boolean,
+  root: string
 ): VideoItem[] | null {
   const seen = new Set<string>()
   const videos: VideoItem[] = []
 
   for (const value of values) {
-    const video = sanitizeVideo(value, rejectUnknownKeys)
+    const video = sanitizeVideo(value, rejectUnknownKeys, root)
     if (!video || seen.has(video.sourceId)) {
       return null
     }
@@ -214,7 +232,8 @@ function sanitizeVideos(
 
 function sanitizeVideo(
   value: unknown,
-  rejectUnknownKeys: boolean
+  rejectUnknownKeys: boolean,
+  root: string
 ): VideoItem | null {
   if (
     !isRecord(value) ||
@@ -224,7 +243,7 @@ function sanitizeVideo(
     !isCanonicalFsId(value.sourceId) ||
     value.id !== `baidu:${value.sourceId}` ||
     !isSafeText(value.name) ||
-    !isSafeAbsolutePath(value.path)
+    !isPathWithinRoot(value.path, root)
   ) {
     return null
   }
@@ -282,6 +301,18 @@ function isSafeText(value: unknown): value is string {
     typeof value === 'string' &&
     Boolean(value.trim()) &&
     !CONTROL_CHARACTER.test(value)
+  )
+}
+
+function isSafeAppRoot(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_APP_ROOT.test(value)
+}
+
+function isPathWithinRoot(value: unknown, root: string): value is string {
+  return (
+    isSafeAbsolutePath(value) &&
+    value.startsWith(`${root}/`) &&
+    value.length > root.length + 1
   )
 }
 

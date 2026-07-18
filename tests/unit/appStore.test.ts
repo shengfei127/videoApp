@@ -9,6 +9,7 @@ import type { DirectVideoRecord, VideoItem } from '@/domain/video'
 import { AuthRepository, AUTH_STORAGE_KEY } from '@/features/auth/authRepository'
 import { BaiduError } from '@/features/baidu/baiduErrors'
 import {
+  CATALOG_CACHE_KEY,
   CATALOG_REFRESH_COOLDOWN_MS,
   CatalogCache
 } from '@/features/catalog/catalogCache'
@@ -35,6 +36,10 @@ const CONFIG: RuntimeConfig = {
   baiduRedirectUri: 'https://localhost/pianke/oauth/baidu',
   useMocks: false
 }
+const H5_DEVELOPMENT = {
+  uniPlatform: 'h5',
+  nodeEnv: 'development'
+} as const
 
 describe('app store initialization', () => {
   it('is concurrency-safe and idempotent', async () => {
@@ -332,6 +337,29 @@ describe('app store Baidu synchronization', () => {
 })
 
 describe('app store derived catalog', () => {
+  it('never exposes a tampered cached video outside the configured Baidu root', async () => {
+    const context = createTestContext('getters-tampered-cache')
+    const outside = {
+      ...baiduVideo('1', NOW - 100),
+      path: '/apps/其他/泄漏.mp4'
+    }
+    context.storage.write(CATALOG_CACHE_KEY, {
+      videos: [outside],
+      savedAt: NOW
+    })
+
+    await context.store.initialize()
+
+    expect(context.store.baiduVideos).toEqual([])
+    expect(context.store.mergedVideos).toEqual([])
+    expect(context.store.recentVideos).toEqual([])
+    context.store.searchQuery = '泄漏'
+    expect(context.store.searchResults).toEqual([])
+    expect(context.store.folderTree.videos).toEqual([])
+    expect(context.store.folderTree.folders).toEqual([])
+    expect(context.storage.read(CATALOG_CACHE_KEY, null)).toBeNull()
+  })
+
   it('normalizes direct records and merges both sources without mutating repository data', async () => {
     const context = createTestContext('getters-merged')
     const direct = context.directLinkService.add({
@@ -570,8 +598,14 @@ describe('mock catalog bootstrap', () => {
 
   it('returns deterministic deep clones for the resume scenario', () => {
     const config = { ...CONFIG, useMocks: true }
-    const first = bootstrapMocks(config, { scenario: 'resume' })!
-    const second = bootstrapMocks(config, { scenario: 'resume' })!
+    const first = bootstrapMocks(config, {
+      scenario: 'resume',
+      environment: H5_DEVELOPMENT
+    })!
+    const second = bootstrapMocks(config, {
+      scenario: 'resume',
+      environment: H5_DEVELOPMENT
+    })!
 
     expect(first.scenario).toBe('resume')
     expect(first.baiduVideos).toHaveLength(3)
@@ -615,12 +649,25 @@ describe('mock catalog bootstrap', () => {
 
   it('supports all scenarios, safely falls back for unknown input, and exposes no provider secrets', () => {
     const config = { ...CONFIG, useMocks: true }
-    const firstRun = bootstrapMocks(config, { scenario: 'first-run' })!
-    const library = bootstrapMocks(config, { scenario: 'library' })!
-    const resume = bootstrapMocks(config, { scenario: 'resume' })!
-    const baiduError = bootstrapMocks(config, { scenario: 'baidu-error' })!
+    const firstRun = bootstrapMocks(config, {
+      scenario: 'first-run',
+      environment: H5_DEVELOPMENT
+    })!
+    const library = bootstrapMocks(config, {
+      scenario: 'library',
+      environment: H5_DEVELOPMENT
+    })!
+    const resume = bootstrapMocks(config, {
+      scenario: 'resume',
+      environment: H5_DEVELOPMENT
+    })!
+    const baiduError = bootstrapMocks(config, {
+      scenario: 'baidu-error',
+      environment: H5_DEVELOPMENT
+    })!
     const unknown = bootstrapMocks(config, {
-      scenario: '../../unknown?access_token=sentinel'
+      scenario: '../../unknown?access_token=sentinel',
+      environment: H5_DEVELOPMENT
     })!
 
     expect(firstRun).toMatchObject({
@@ -656,12 +703,41 @@ describe('mock catalog bootstrap', () => {
   it('chooses a valid H5 query scenario when no scenario is injected', () => {
     const result = bootstrapMocks(
       { ...CONFIG, useMocks: true },
-      { search: '?unrelated=1&scenario=resume' }
+      {
+        search: '?unrelated=1&scenario=resume',
+        environment: H5_DEVELOPMENT
+      }
     )
 
     expect(result?.scenario).toBe('resume')
     expect(result?.progressHistory).toHaveLength(1)
   })
+
+  it.each([
+    ['H5 production', { uniPlatform: 'h5', nodeEnv: 'production' }],
+    ['App development', { uniPlatform: 'app-plus', nodeEnv: 'development' }],
+    ['App production', { uniPlatform: 'app-plus', nodeEnv: 'production' }],
+    ['missing platform', { nodeEnv: 'development' }],
+    ['unknown platform', { uniPlatform: 'unknown', nodeEnv: 'development' }],
+    ['missing mode', { uniPlatform: 'h5' }]
+  ] as const)(
+    'returns before inspecting a scenario in %s',
+    (_case, environment) => {
+      let inspectedScenario = false
+      const options = {
+        environment,
+        get scenario() {
+          inspectedScenario = true
+          return 'resume'
+        }
+      } as BootstrapMocksOptions
+
+      expect(
+        bootstrapMocks({ ...CONFIG, useMocks: true }, options)
+      ).toBeNull()
+      expect(inspectedScenario).toBe(false)
+    }
+  )
 
   it('does not call mock bootstrap in the store when runtime mocks are disabled', async () => {
     const mockBootstrap = vi.fn()
@@ -679,7 +755,8 @@ describe('mock catalog bootstrap', () => {
     const context = createTestContext('mocks-resume-store', {
       config: { ...CONFIG, useMocks: true },
       bootstrapMocks,
-      mockScenario: 'resume'
+      mockScenario: 'resume',
+      mockEnvironment: H5_DEVELOPMENT
     })
 
     await context.store.initialize()
@@ -706,7 +783,8 @@ describe('mock catalog bootstrap', () => {
     const context = createTestContext('mocks-error-store', {
       config: { ...CONFIG, useMocks: true },
       bootstrapMocks,
-      mockScenario: 'baidu-error'
+      mockScenario: 'baidu-error',
+      mockEnvironment: H5_DEVELOPMENT
     })
 
     await context.store.initialize()
@@ -722,6 +800,26 @@ describe('mock catalog bootstrap', () => {
     expect(context.listPage).not.toHaveBeenCalled()
     expect(JSON.stringify(context.store.lastError)).not.toContain('token')
     expect(JSON.stringify(context.store.lastError)).not.toContain('dlink')
+  })
+
+  it('refuses a manually forged mock config in an App development build', async () => {
+    const context = createTestContext('mocks-app-denied-store', {
+      config: { ...CONFIG, useMocks: true },
+      bootstrapMocks,
+      mockScenario: 'resume',
+      mockEnvironment: {
+        uniPlatform: 'app-plus',
+        nodeEnv: 'development'
+      }
+    })
+
+    await context.store.initialize()
+
+    expect(context.store.baiduVideos).toEqual([])
+    expect(context.store.directRecords).toEqual([])
+    expect(context.store.progressHistory).toEqual([])
+    expect(context.store.lastError).toMatchObject({ code: 'initialization' })
+    expect(context.listPage).not.toHaveBeenCalled()
   })
 })
 
@@ -759,7 +857,10 @@ function createTestContext(
   const authRepository = new AuthRepository(storage)
   const directLinkService = new DirectLinkService(storage, { now })
   const progressRepository = new ProgressRepository(storage)
-  const cache = new CatalogCache(storage, now)
+  const cache = new CatalogCache(storage, {
+    root: CONFIG.baiduRoot,
+    now
+  })
   const listPage = vi.fn().mockResolvedValue([])
   const dependencies: AppStoreDependencies = {
     authRepository,

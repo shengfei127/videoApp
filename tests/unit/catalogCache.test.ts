@@ -16,12 +16,16 @@ import {
 } from '@/infrastructure/storage'
 
 const START = 1_800_000_000_000
+const ROOT = '/apps/片刻'
 
 describe('CatalogCache snapshots', () => {
   it('persists and returns a cloned successful Baidu snapshot', () => {
     const storage = createMemoryStorage()
     const videos = [baiduVideo('1')]
-    const cache = new CatalogCache(storage, () => START)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
 
     const saved = cache.saveSuccessful(videos)
     videos[0]!.name = 'mutated input.mp4'
@@ -38,7 +42,10 @@ describe('CatalogCache snapshots', () => {
 
   it('treats age below fifteen minutes as fresh and the exact boundary as stale', () => {
     let now = START
-    const cache = new CatalogCache(createMemoryStorage(), () => now)
+    const cache = new CatalogCache(createMemoryStorage(), {
+      root: ROOT,
+      now: () => now
+    })
     cache.saveSuccessful([baiduVideo('1')])
 
     now = START + CATALOG_CACHE_FRESH_MS - 1
@@ -53,7 +60,7 @@ describe('CatalogCache snapshots', () => {
   it('keeps the previous snapshot while recording a request start, then replaces it once', () => {
     let now = START
     const storage = createMemoryStorage()
-    const cache = new CatalogCache(storage, () => now)
+    const cache = new CatalogCache(storage, { root: ROOT, now: () => now })
     cache.saveSuccessful([baiduVideo('1')])
     const beforeRequest = storage.read<unknown>(CATALOG_CACHE_KEY, null)
 
@@ -74,7 +81,10 @@ describe('CatalogCache snapshots', () => {
 
   it('does not replace a valid snapshot if the atomic storage write fails', () => {
     const backing = createMemoryStorage()
-    const seed = new CatalogCache(backing, () => START)
+    const seed = new CatalogCache(backing, {
+      root: ROOT,
+      now: () => START
+    })
     seed.saveSuccessful([baiduVideo('1')])
     const failingStorage: KeyValueStorage = {
       read: backing.read,
@@ -83,7 +93,10 @@ describe('CatalogCache snapshots', () => {
         throw new Error('sentinel-write-failure')
       }
     }
-    const cache = new CatalogCache(failingStorage, () => START + 1)
+    const cache = new CatalogCache(failingStorage, {
+      root: ROOT,
+      now: () => START + 1
+    })
 
     expect(() => cache.saveSuccessful([baiduVideo('2')])).toThrow(
       'sentinel-write-failure'
@@ -93,7 +106,10 @@ describe('CatalogCache snapshots', () => {
 
   it('persists only the narrow VideoItem fields and never token or dlink extras', () => {
     const storage = createMemoryStorage()
-    const cache = new CatalogCache(storage, () => START)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
     const unsafeInput = {
       ...baiduVideo('1'),
       accessToken: 'sentinel-access-token',
@@ -112,7 +128,10 @@ describe('CatalogCache snapshots', () => {
 describe('CatalogCache cooldown', () => {
   it('rejects every request during the first sixty seconds, including forced callers', () => {
     let now = START
-    const cache = new CatalogCache(createMemoryStorage(), () => now)
+    const cache = new CatalogCache(createMemoryStorage(), {
+      root: ROOT,
+      now: () => now
+    })
 
     expect(cache.beginRequest()).toEqual({ started: true, startedAt: START })
 
@@ -131,7 +150,10 @@ describe('CatalogCache cooldown', () => {
 
   it('records the request start even before any successful snapshot exists', () => {
     const storage = createMemoryStorage()
-    const cache = new CatalogCache(storage, () => START)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
 
     expect(cache.beginRequest()).toEqual({ started: true, startedAt: START })
     expect(cache.load()).toBeNull()
@@ -139,6 +161,90 @@ describe('CatalogCache cooldown', () => {
       videos: [],
       requestStartedAt: START
     })
+  })
+})
+
+describe('CatalogCache configured root boundary', () => {
+  it.each([
+    '/apps/其他/sibling.mp4',
+    '/apps/片刻2/prefix-lookalike.mp4',
+    '/apps/片刻/../其他/traversal.mp4',
+    '/apps/片刻/%2e%2e/encoded-traversal.mp4',
+    '/apps/片刻/folder%2Fother/encoded-separator.mp4'
+  ])('removes a cached video outside the exact configured root: %s', (path) => {
+    const storage = createMemoryStorage()
+    preserveUnrelatedData(storage)
+    storage.write(CATALOG_CACHE_KEY, {
+      videos: [{ ...baiduVideo('1'), path }],
+      savedAt: START
+    })
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
+
+    expect(cache.load()).toBeNull()
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toBeNull()
+    expectUnrelatedDataPreserved(storage)
+  })
+
+  it('loads direct and nested files under the exact configured root', () => {
+    const storage = createMemoryStorage()
+    const directRoot = baiduVideo('1')
+    const nested = {
+      ...baiduVideo('2'),
+      path: `${ROOT}/课程/入门/视频2.mp4`
+    }
+    storage.write(CATALOG_CACHE_KEY, {
+      videos: [directRoot, nested],
+      savedAt: START
+    })
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
+
+    expect(cache.load()).toEqual({
+      videos: [directRoot, nested],
+      savedAt: START
+    })
+  })
+
+  it('rejects an out-of-root successful replacement before touching the old snapshot', () => {
+    const storage = createMemoryStorage()
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
+    cache.saveSuccessful([baiduVideo('1')])
+    const before = storage.read<unknown>(CATALOG_CACHE_KEY, null)
+
+    expect(() =>
+      cache.saveSuccessful([
+        {
+          ...baiduVideo('2'),
+          path: '/apps/其他/outside.mp4'
+        }
+      ])
+    ).toThrow()
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toEqual(before)
+    expect(cache.load()).toEqual({ videos: [baiduVideo('1')], savedAt: START })
+  })
+
+  it.each([
+    '/',
+    '/apps',
+    '/apps/片刻/child',
+    '/apps/../片刻',
+    '/apps/片刻?debug=1'
+  ])('rejects an invalid configured root at construction: %s', (root) => {
+    expect(
+      () =>
+        new CatalogCache(createMemoryStorage(), {
+          root,
+          now: () => START
+        })
+    ).toThrow()
   })
 })
 
@@ -173,7 +279,10 @@ describe('CatalogCache untrusted storage and isolation', () => {
     const storage = createMemoryStorage()
     preserveUnrelatedData(storage)
     storage.write(CATALOG_CACHE_KEY, stored)
-    const cache = new CatalogCache(storage, () => START)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
 
     expect(cache.load()).toBeNull()
     expect(storage.read(CATALOG_CACHE_KEY, null)).toBeNull()
@@ -189,7 +298,7 @@ describe('CatalogCache untrusted storage and isolation', () => {
         savedAt: START
       })
       preserveUnrelatedData(storage)
-      const cache = new CatalogCache(storage, () => now)
+      const cache = new CatalogCache(storage, { root: ROOT, now: () => now })
 
       expect(cache.load()).toBeNull()
       expect(cache.canRefresh()).toBe(false)
@@ -204,7 +313,10 @@ describe('CatalogCache untrusted storage and isolation', () => {
   it('clear removes only the catalog cache key', () => {
     const storage = createMemoryStorage()
     preserveUnrelatedData(storage)
-    const cache = new CatalogCache(storage, () => START)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
     cache.saveSuccessful([baiduVideo('1')])
 
     cache.clear()
