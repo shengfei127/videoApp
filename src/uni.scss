@@ -1,0 +1,11 @@
+@use './styles/tokens.scss' as *;
+
+$uni-color-primary: $color-primary;
+$uni-color-success: $color-primary;
+$uni-color-warning: $color-progress;
+$uni-bg-color: $color-bg;
+$uni-bg-color-grey: $color-bg;
+$uni-text-color: $color-text;
+$uni-text-color-grey: $color-muted;
+$uni-border-color: $color-border;
+$uni-border-radius-base: $radius-control;
