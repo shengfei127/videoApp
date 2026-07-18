@@ -205,6 +205,7 @@ describe('OAuth WebView adapter', () => {
   it('keeps H5 disabled without navigating when mock mode is off', () => {
     const onCallback = vi.fn()
     const onCancel = vi.fn()
+    const createPendingState = vi.fn()
     const clearPendingState = vi.fn()
 
     const handle = openOAuthWebview({
@@ -212,6 +213,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       onCallback,
       onCancel,
+      createPendingState,
       clearPendingState
     })
 
@@ -222,6 +224,7 @@ describe('OAuth WebView adapter', () => {
     expect(uni.redirectTo).not.toHaveBeenCalled()
     handle.close()
     expect(onCancel).not.toHaveBeenCalled()
+    expect(createPendingState).not.toHaveBeenCalled()
     expect(clearPendingState).not.toHaveBeenCalled()
   })
 
@@ -247,6 +250,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       mockMode: true,
       onCallback,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -268,11 +272,12 @@ describe('OAuth WebView adapter', () => {
       authorizeUrl,
       redirectUri: config.redirectUri,
       onCallback,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
     expect(handle.enabled).toBe(true)
-    expect(app.existing.close).toHaveBeenCalledOnce()
+    expect(app.existing.close).not.toHaveBeenCalled()
     expect(app.create).toHaveBeenCalledWith(
       authorizeUrl,
       'pianke-baidu-oauth',
@@ -323,6 +328,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       onCallback: vi.fn(),
       onCancel,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -346,6 +352,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       onCallback: vi.fn(),
       onCancel,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -357,6 +364,8 @@ describe('OAuth WebView adapter', () => {
 
   it('replaces and closes a stale handle when its cancel handler throws', () => {
     const app = createPlusWebviewMock()
+    const createFirstPending = vi.fn()
+    const createSecondPending = vi.fn()
     const clearFirstPending = vi.fn()
     const clearSecondPending = vi.fn()
     vi.stubGlobal('plus', app.plus)
@@ -368,6 +377,7 @@ describe('OAuth WebView adapter', () => {
       onCancel: () => {
         throw new Error('private-access-token')
       },
+      createPendingState: createFirstPending,
       clearPendingState: clearFirstPending
     })
 
@@ -376,15 +386,67 @@ describe('OAuth WebView adapter', () => {
         authorizeUrl: buildAuthorizeUrl(config, 'state-second'),
         redirectUri: config.redirectUri,
         onCallback: vi.fn(),
+        createPendingState: createSecondPending,
         clearPendingState: clearSecondPending
       })
     ).not.toThrow()
     expect(app.create).toHaveBeenCalledTimes(2)
     expect(app.webview.close).toHaveBeenCalledOnce()
+    expect(createFirstPending).toHaveBeenCalledOnce()
+    expect(createSecondPending).toHaveBeenCalledOnce()
     expect(clearFirstPending).toHaveBeenCalledOnce()
 
     app.closeListener!()
     expect(clearSecondPending).toHaveBeenCalledOnce()
+  })
+
+  it('clears native stale state before creating a fresh pending flow', async () => {
+    vi.resetModules()
+    const { openOAuthWebview: openFreshOAuthWebview } = await import(
+      '@/features/auth/oauthWebview'
+    )
+    const app = createPlusWebviewMock({ nativeStale: true })
+    const storage = createMemoryStorage()
+    const repository = new AuthRepository(storage)
+    const events: string[] = []
+    repository.createPending('stale-state', 1000)
+    storage.write('unrelated', { preserved: true })
+    app.existing.close.mockImplementation(() => {
+      events.push('close-stale')
+    })
+    const clearPendingState = vi.fn(() => {
+      events.push('clear-stale')
+      repository.clearPending()
+    })
+    const createPendingState = vi.fn(() => {
+      events.push('create-new')
+      expect(storage.read(OAUTH_PENDING_STORAGE_KEY, null)).toBeNull()
+      repository.createPending('new-state', 2000)
+    })
+    vi.stubGlobal('plus', app.plus)
+
+    const handle = openFreshOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, 'new-state'),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      clearPendingState,
+      createPendingState
+    })
+
+    expect(events).toEqual(['clear-stale', 'close-stale', 'create-new'])
+    expect(clearPendingState).toHaveBeenCalledOnce()
+    expect(createPendingState).toHaveBeenCalledOnce()
+    expect(storage.read(OAUTH_PENDING_STORAGE_KEY, null)).toEqual({
+      state: 'new-state',
+      createdAt: 2000
+    })
+    expect(storage.read('unrelated', null)).toEqual({ preserved: true })
+
+    handle.close()
+
+    expect(clearPendingState).toHaveBeenCalledTimes(2)
+    expect(storage.read(OAUTH_PENDING_STORAGE_KEY, null)).toBeNull()
+    expect(storage.read('unrelated', null)).toEqual({ preserved: true })
   })
 
   it('contains cancellation-handler errors from the native close event', () => {
@@ -400,12 +462,165 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       onCallback: vi.fn(),
       onCancel,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
     expect(() => app.closeListener!()).not.toThrow()
     expect(onCancel).toHaveBeenCalledOnce()
     expectPendingCleared(pending)
+  })
+
+  it('contains async cancellation and failure rejections on App close', async () => {
+    const app = createPlusWebviewMock()
+    const pending = createPendingContext()
+    const onCancel = vi.fn(async () => {
+      throw new Error('private-cancel-value')
+    })
+    const onCallbackFailure = vi.fn(async () => {
+      throw new Error('private-failure-value')
+    })
+    vi.stubGlobal('plus', app.plus)
+
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, pending.state),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      onCancel,
+      onCallbackFailure,
+      createPendingState: pending.createPendingState,
+      clearPendingState: pending.clearPendingState
+    })
+
+    handle.close()
+
+    await vi.waitFor(() => expect(onCallbackFailure).toHaveBeenCalledOnce())
+    expect(onCancel).toHaveBeenCalledOnce()
+    await Promise.resolve()
+    expect(app.webview.close).toHaveBeenCalledOnce()
+    expectPendingCleared(pending)
+  })
+
+  it('contains async cancellation rejection from the native close event', async () => {
+    const app = createPlusWebviewMock()
+    const pending = createPendingContext()
+    const onCancel = vi.fn(async () => {
+      throw new Error('private-cancel-value')
+    })
+    const onCallbackFailure = vi.fn()
+    vi.stubGlobal('plus', app.plus)
+
+    openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, pending.state),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      onCancel,
+      onCallbackFailure,
+      createPendingState: pending.createPendingState,
+      clearPendingState: pending.clearPendingState
+    })
+
+    app.closeListener!()
+
+    await vi.waitFor(() => expect(onCallbackFailure).toHaveBeenCalledOnce())
+    expect(onCancel).toHaveBeenCalledOnce()
+    expectPendingCleared(pending)
+  })
+
+  it('contains async cancellation rejection when an H5 mock is closed', async () => {
+    const pending = createPendingContext()
+    const onCancel = vi.fn(async () => {
+      throw new Error('private-cancel-value')
+    })
+    const onCallbackFailure = vi.fn()
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, pending.state),
+      redirectUri: config.redirectUri,
+      mockMode: true,
+      onCallback: vi.fn(),
+      onCancel,
+      onCallbackFailure,
+      createPendingState: pending.createPendingState,
+      clearPendingState: pending.clearPendingState
+    })
+
+    handle.close()
+
+    await vi.waitFor(() => expect(onCallbackFailure).toHaveBeenCalledOnce())
+    expect(onCancel).toHaveBeenCalledOnce()
+    expectPendingCleared(pending)
+  })
+
+  it('contains async failure-notification rejection after H5 callback failure', async () => {
+    const pending = createPendingContext()
+    const onCallbackFailure = vi.fn(async () => {
+      throw new Error('private-failure-value')
+    })
+    openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, pending.state),
+      redirectUri: config.redirectUri,
+      mockMode: true,
+      onCallback: () => Promise.reject(new Error('private-callback-value')),
+      onCallbackFailure,
+      createPendingState: pending.createPendingState,
+      clearPendingState: pending.clearPendingState
+    })
+
+    await vi.waitFor(() => expect(onCallbackFailure).toHaveBeenCalledOnce())
+    await Promise.resolve()
+    expectPendingCleared(pending)
+  })
+
+  it('rejects an async pending-clear hook without blocking App close', async () => {
+    const app = createPlusWebviewMock()
+    const clearPendingState = vi.fn(async () => {
+      throw new Error('private-clear-value')
+    })
+    const onCancel = vi.fn()
+    const onCallbackFailure = vi.fn()
+    vi.stubGlobal('plus', app.plus)
+
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, 'state-123'),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      onCancel,
+      onCallbackFailure,
+      createPendingState: vi.fn(),
+      clearPendingState
+    })
+
+    handle.close()
+
+    expect(clearPendingState).toHaveBeenCalledOnce()
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onCallbackFailure).toHaveBeenCalledOnce()
+    expect(app.webview.close).toHaveBeenCalledOnce()
+    await Promise.resolve()
+  })
+
+  it('rejects an async pending-create hook before opening an App WebView', async () => {
+    const app = createPlusWebviewMock()
+    const createPendingState = vi.fn(async () => {
+      throw new Error('private-create-value')
+    })
+    const onCallbackFailure = vi.fn()
+    vi.stubGlobal('plus', app.plus)
+
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, 'state-123'),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      onCallbackFailure,
+      createPendingState,
+      clearPendingState: vi.fn()
+    })
+
+    expect(createPendingState).toHaveBeenCalledOnce()
+    expect(handle.enabled).toBe(false)
+    expect(onCallbackFailure).toHaveBeenCalledOnce()
+    expect(app.create).not.toHaveBeenCalled()
+    await Promise.resolve()
   })
 
   it('closes after callback-handler failure without exposing the error', async () => {
@@ -419,6 +634,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       onCallback: () => Promise.reject(new Error('private-access-token')),
       onCallbackFailure,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -473,6 +689,7 @@ describe('OAuth WebView adapter', () => {
         )
       },
       onCallbackFailure,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -491,6 +708,7 @@ describe('OAuth WebView adapter', () => {
       redirectUri: config.redirectUri,
       mockMode: true,
       onCallback,
+      createPendingState: pending.createPendingState,
       clearPendingState: pending.clearPendingState
     })
 
@@ -510,6 +728,7 @@ describe('OAuth WebView adapter', () => {
       throw new Error('another-private-value')
     })
     const onCancel = vi.fn()
+    const createPendingState = vi.fn()
     vi.stubGlobal('plus', app.plus)
 
     const handle = openOAuthWebview({
@@ -518,6 +737,7 @@ describe('OAuth WebView adapter', () => {
       onCallback: vi.fn(),
       onCancel,
       onCallbackFailure,
+      createPendingState,
       clearPendingState
     })
 
@@ -534,12 +754,12 @@ function createPendingContext() {
   const state = 'state-123'
   const storage = createMemoryStorage()
   const repository = new AuthRepository(storage)
-  repository.createPending(state, 1000)
   storage.write('unrelated', { preserved: true })
 
   return {
     state,
     storage,
+    createPendingState: vi.fn(() => repository.createPending(state, 1000)),
     clearPendingState: vi.fn(() => repository.clearPending())
   }
 }
@@ -547,12 +767,15 @@ function createPendingContext() {
 function expectPendingCleared(
   context: ReturnType<typeof createPendingContext>
 ): void {
+  expect(context.createPendingState).toHaveBeenCalledOnce()
   expect(context.clearPendingState).toHaveBeenCalledOnce()
   expect(context.storage.read(OAUTH_PENDING_STORAGE_KEY, null)).toBeNull()
   expect(context.storage.read('unrelated', null)).toEqual({ preserved: true })
 }
 
-function createPlusWebviewMock() {
+function createPlusWebviewMock(
+  options: { nativeStale?: boolean } = {}
+) {
   let intercept: ((event: { url: string }) => void) | undefined
   let closeListener: (() => void) | undefined
   const existing = { close: vi.fn() }
@@ -580,7 +803,7 @@ function createPlusWebviewMock() {
     plus: {
       webview: {
         create,
-        getWebviewById: vi.fn(() => existing)
+        getWebviewById: vi.fn(() => (options.nativeStale ? existing : null))
       }
     },
     create,

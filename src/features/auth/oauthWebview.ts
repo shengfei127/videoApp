@@ -6,6 +6,7 @@ export interface OpenOAuthWebviewOptions {
   redirectUri: string
   mockMode?: boolean
   onCallback: (callbackUrl: string) => void | Promise<void>
+  createPendingState: () => void
   clearPendingState: () => void
   onCancel?: () => void
   onCallbackFailure?: () => void
@@ -63,7 +64,9 @@ export function openOAuthWebview(
   // #ifdef APP-PLUS
   if (typeof plus !== 'undefined') {
     const handle = openAppOAuthWebview(options)
-    activeHandle = handle
+    if (handle.enabled) {
+      activeHandle = handle
+    }
     return handle
   }
   // #endif
@@ -82,7 +85,20 @@ function openAppOAuthWebview(
   const staleWebview = webviewApi.getWebviewById?.(OAUTH_WEBVIEW_ID)
 
   if (staleWebview) {
-    safeClose(staleWebview)
+    let staleStateCleared = false
+    try {
+      staleStateCleared = clearPendingStateSafely(options)
+    } finally {
+      safeClose(staleWebview)
+    }
+
+    if (!staleStateCleared) {
+      return createDisabledHandle()
+    }
+  }
+
+  if (!createPendingStateSafely(options)) {
+    return createDisabledHandle()
   }
 
   const webview = webviewApi.create(options.authorizeUrl, OAUTH_WEBVIEW_ID, {
@@ -165,10 +181,11 @@ function openH5OAuthMock(
   options: OpenOAuthWebviewOptions
 ): OAuthWebviewHandle {
   if (!options.mockMode) {
-    return {
-      enabled: false,
-      close: () => undefined
-    }
+    return createDisabledHandle()
+  }
+
+  if (!createPendingStateSafely(options)) {
+    return createDisabledHandle()
   }
 
   let settled = false
@@ -253,8 +270,25 @@ function safeClose(webview: AppOAuthWebview): void {
 }
 
 function clearPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
+  return invokeSynchronousLifecycle(options.clearPendingState, options)
+}
+
+function createPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
+  return invokeSynchronousLifecycle(options.createPendingState, options)
+}
+
+function invokeSynchronousLifecycle(
+  callback: () => void,
+  options: OpenOAuthWebviewOptions
+): boolean {
   try {
-    options.clearPendingState()
+    const result = (callback as () => unknown)()
+    if (isThenable(result)) {
+      containRejection(result)
+      notifyCallbackFailureSafely(options)
+      return false
+    }
+
     return true
   } catch {
     notifyCallbackFailureSafely(options)
@@ -262,9 +296,19 @@ function clearPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
   }
 }
 
+function createDisabledHandle(): OAuthWebviewHandle {
+  return {
+    enabled: false,
+    close: () => undefined
+  }
+}
+
 function notifyCancellationSafely(options: OpenOAuthWebviewOptions): void {
   try {
-    options.onCancel?.()
+    const result = (options.onCancel as (() => unknown) | undefined)?.()
+    if (isThenable(result)) {
+      containRejection(result, () => notifyCallbackFailureSafely(options))
+    }
   } catch {
     notifyCallbackFailureSafely(options)
   }
@@ -272,8 +316,28 @@ function notifyCancellationSafely(options: OpenOAuthWebviewOptions): void {
 
 function notifyCallbackFailureSafely(options: OpenOAuthWebviewOptions): void {
   try {
-    options.onCallbackFailure?.()
+    const result = (
+      options.onCallbackFailure as (() => unknown) | undefined
+    )?.()
+    if (isThenable(result)) {
+      containRejection(result)
+    }
   } catch {
     // User callbacks never escape lifecycle cleanup or expose their details.
   }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
+}
+
+function containRejection(
+  value: PromiseLike<unknown>,
+  onRejected?: () => void
+): void {
+  void Promise.resolve(value).catch(() => onRejected?.())
 }
