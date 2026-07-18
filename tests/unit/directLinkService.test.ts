@@ -54,6 +54,18 @@ describe('DirectLinkService', () => {
     expect(storage.read(DIRECT_VIDEO_STORAGE_KEY, [])).toEqual([record])
   })
 
+  it('keeps a malformed encoded basename as the direct-link name', () => {
+    const service = new DirectLinkService(createMemoryStorage(), {
+      now: () => 1000,
+      uuidFactory: () => 'direct-1'
+    })
+    const addMalformedLink = () =>
+      service.add({ url: 'https://cdn.example.test/%zz.mp4' })
+
+    expect(addMalformedLink).not.toThrow()
+    expect(service.list()).toMatchObject([{ name: '%zz.mp4' }])
+  })
+
   it('trims a supplied name and falls back to the decoded basename or default title', () => {
     let sequence = 0
     const service = new DirectLinkService(createMemoryStorage(), {

@@ -149,7 +149,11 @@ export class DirectLinkService {
 function deriveName(url: URL): string {
   const basename = url.pathname.split('/').filter(Boolean).pop() ?? ''
 
-  return decodeURIComponent(basename)
+  try {
+    return decodeURIComponent(basename)
+  } catch {
+    return basename
+  }
 }
 
 function resolveName(name: string | undefined, url: URL): string {
