@@ -19,6 +19,21 @@ describe('parseRuntimeConfig', () => {
     ).toBe('https://localhost/pianke/oauth/baidu')
   })
 
+  it('rejects control characters before normalizing a folder', () => {
+    expect(
+      parseRuntimeConfig({ VITE_BAIDU_APP_FOLDER: '\t片刻' }).baiduRoot
+    ).toBe('/apps/片刻')
+    expect(
+      parseRuntimeConfig({ VITE_BAIDU_APP_FOLDER: '\t影片' }).baiduRoot
+    ).toBe('/apps/片刻')
+  })
+
+  it('normalizes leading and trailing folder slashes', () => {
+    expect(
+      parseRuntimeConfig({ VITE_BAIDU_APP_FOLDER: '/片刻/' }).baiduRoot
+    ).toBe('/apps/片刻')
+  })
+
   it('falls back when the configured folder could escape the app root', () => {
     const config = parseRuntimeConfig({
       VITE_BAIDU_APP_FOLDER: '../other'
@@ -47,6 +62,14 @@ describe('parseRuntimeConfig', () => {
   ])('falls back from an unsafe callback URL: %s', (callback) => {
     expect(
       parseRuntimeConfig({ VITE_BAIDU_REDIRECT_URI: callback }).baiduRedirectUri
+    ).toBe('https://localhost/pianke/oauth/baidu')
+  })
+
+  it('does not normalize whitespace around the callback URL', () => {
+    expect(
+      parseRuntimeConfig({
+        VITE_BAIDU_REDIRECT_URI: ' https://localhost/pianke/oauth/baidu '
+      }).baiduRedirectUri
     ).toBe('https://localhost/pianke/oauth/baidu')
   })
 })

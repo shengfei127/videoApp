@@ -6,51 +6,41 @@ export interface RuntimeConfig {
   useMocks: boolean
 }
 
-const DEFAULT_BAIDU_APP_FOLDER = '片刻'
+const DEFAULT_BAIDU_FOLDER = '片刻'
 const DEFAULT_BAIDU_REDIRECT_URI = 'https://localhost/pianke/oauth/baidu'
 const SAFE_FOLDER_SEGMENT = /^[\p{L}\p{N} _-]{1,20}$/u
+const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/
 
 function isSafeFolderSegment(folder: string): boolean {
   return SAFE_FOLDER_SEGMENT.test(folder)
 }
 
-function isValidBaiduRedirectUri(redirectUri: string): boolean {
-  if (redirectUri !== DEFAULT_BAIDU_REDIRECT_URI) {
-    return false
+function parseBaiduAppFolder(rawFolder: string | undefined): string {
+  if (!rawFolder || CONTROL_CHARACTER.test(rawFolder)) {
+    return DEFAULT_BAIDU_FOLDER
   }
 
-  try {
-    const parsed = new URL(redirectUri)
+  const folder = rawFolder.trim().replace(/^\/+|\/+$/g, '')
 
-    return (
-      parsed.protocol === 'https:' &&
-      parsed.hostname === 'localhost' &&
-      parsed.port === '' &&
-      parsed.pathname === '/pianke/oauth/baidu' &&
-      parsed.search === '' &&
-      parsed.hash === ''
-    )
-  } catch {
-    return false
-  }
+  return isSafeFolderSegment(folder) ? folder : DEFAULT_BAIDU_FOLDER
+}
+
+function parseBaiduRedirectUri(rawRedirectUri: string | undefined): string {
+  return rawRedirectUri === DEFAULT_BAIDU_REDIRECT_URI
+    ? rawRedirectUri
+    : DEFAULT_BAIDU_REDIRECT_URI
 }
 
 export function parseRuntimeConfig(
   env: Record<string, string | undefined>
 ): RuntimeConfig {
-  const configuredFolder = (env.VITE_BAIDU_APP_FOLDER || '').trim()
-  const baiduAppFolder = isSafeFolderSegment(configuredFolder)
-    ? configuredFolder
-    : DEFAULT_BAIDU_APP_FOLDER
-  const configuredRedirectUri = (env.VITE_BAIDU_REDIRECT_URI || '').trim()
+  const baiduAppFolder = parseBaiduAppFolder(env.VITE_BAIDU_APP_FOLDER)
 
   return {
     baiduAppKey: (env.VITE_BAIDU_APP_KEY || '').trim(),
     baiduAppFolder,
     baiduRoot: `/apps/${baiduAppFolder}`,
-    baiduRedirectUri: isValidBaiduRedirectUri(configuredRedirectUri)
-      ? configuredRedirectUri
-      : DEFAULT_BAIDU_REDIRECT_URI,
+    baiduRedirectUri: parseBaiduRedirectUri(env.VITE_BAIDU_REDIRECT_URI),
     useMocks: env.VITE_USE_MOCKS === 'true'
   }
 }
