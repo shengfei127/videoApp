@@ -3,6 +3,8 @@ import type { KeyValueStorage } from '@/infrastructure/storage'
 
 export type DirectUrlKind = 'mp4' | 'hls' | 'unknown' | 'invalid'
 
+type DirectMediaKind = DirectVideoRecord['mediaKind']
+
 export const DIRECT_VIDEO_STORAGE_KEY = 'pianke:direct-videos:v1'
 
 interface DirectLinkServiceOptions {
@@ -38,17 +40,10 @@ export function canAcceptUnknownHttpsUrl(
   value: string,
   probeContentType?: string
 ): boolean {
-  if (classifyDirectUrl(value) !== 'unknown' || !probeContentType) {
-    return false
-  }
-
-  const mediaType = probeContentType.split(';', 1)[0].trim().toLowerCase()
-
-  return [
-    'video/mp4',
-    'application/vnd.apple.mpegurl',
-    'application/x-mpegurl'
-  ].includes(mediaType)
+  return (
+    classifyDirectUrl(value) === 'unknown' &&
+    getProbeMediaKind(probeContentType) !== undefined
+  )
 }
 
 export class DirectLinkService {
@@ -67,11 +62,12 @@ export class DirectLinkService {
     input: { url: string; name?: string },
     probeContentType?: string
   ): DirectVideoRecord {
-    const url = this.validateUrl(input.url, probeContentType)
+    const { url, mediaKind } = this.validateUrl(input.url, probeContentType)
     const record: DirectVideoRecord = {
       id: this.uuidFactory(),
       name: resolveName(input.name, url),
       url: url.href,
+      mediaKind,
       addedAt: this.now()
     }
 
@@ -104,11 +100,12 @@ export class DirectLinkService {
       throw new Error('未找到要更新的媒体链接')
     }
 
-    const url = this.validateUrl(input.url, probeContentType)
+    const { url, mediaKind } = this.validateUrl(input.url, probeContentType)
     const updated: DirectVideoRecord = {
       id: existing.id,
       name: resolveName(input.name, url),
       url: url.href,
+      mediaKind,
       addedAt: existing.addedAt
     }
 
@@ -131,19 +128,47 @@ export class DirectLinkService {
     this.storage.remove(DIRECT_VIDEO_STORAGE_KEY)
   }
 
-  private validateUrl(value: string, probeContentType?: string): URL {
+  private validateUrl(
+    value: string,
+    probeContentType?: string
+  ): { url: URL; mediaKind: DirectMediaKind } {
     const kind = classifyDirectUrl(value)
 
     if (kind === 'invalid') {
       throw new Error('请输入有效的 HTTPS 媒体链接')
     }
 
-    if (kind === 'unknown' && !canAcceptUnknownHttpsUrl(value, probeContentType)) {
+    if (kind === 'mp4' || kind === 'hls') {
+      return { url: new URL(value), mediaKind: kind }
+    }
+
+    const mediaKind = getProbeMediaKind(probeContentType)
+
+    if (!mediaKind) {
       throw new Error('无法确认该链接是可播放的媒体链接')
     }
 
-    return new URL(value)
+    return { url: new URL(value), mediaKind }
   }
+}
+
+function getProbeMediaKind(
+  probeContentType?: string
+): DirectMediaKind | undefined {
+  const mediaType = probeContentType?.split(';', 1)[0].trim().toLowerCase()
+
+  if (mediaType === 'video/mp4') {
+    return 'mp4'
+  }
+
+  if (
+    mediaType === 'application/vnd.apple.mpegurl' ||
+    mediaType === 'application/x-mpegurl'
+  ) {
+    return 'hls'
+  }
+
+  return undefined
 }
 
 function deriveName(url: URL): string {
@@ -175,13 +200,23 @@ function isDirectVideoRecord(value: unknown): value is DirectVideoRecord {
 
   const record = value as Record<string, unknown>
 
-  return (
-    typeof record.id === 'string' &&
-    record.id.length > 0 &&
-    typeof record.name === 'string' &&
-    typeof record.url === 'string' &&
-    classifyDirectUrl(record.url) !== 'invalid' &&
-    typeof record.addedAt === 'number' &&
-    Number.isFinite(record.addedAt)
-  )
+  if (
+    typeof record.id !== 'string' ||
+    record.id.length === 0 ||
+    typeof record.name !== 'string' ||
+    typeof record.url !== 'string' ||
+    !isDirectMediaKind(record.mediaKind) ||
+    typeof record.addedAt !== 'number' ||
+    !Number.isFinite(record.addedAt)
+  ) {
+    return false
+  }
+
+  const kind = classifyDirectUrl(record.url)
+
+  return kind === 'unknown' || kind === record.mediaKind
+}
+
+function isDirectMediaKind(value: unknown): value is DirectMediaKind {
+  return value === 'mp4' || value === 'hls'
 }

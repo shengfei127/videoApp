@@ -49,6 +49,7 @@ describe('DirectLinkService', () => {
       id: 'direct-1',
       name: 'hello world.MP4',
       url: 'https://cdn.example.test/videos/hello%20world.MP4?signature=abc',
+      mediaKind: 'mp4',
       addedAt: 1000
     })
     expect(storage.read(DIRECT_VIDEO_STORAGE_KEY, [])).toEqual([record])
@@ -117,8 +118,40 @@ describe('DirectLinkService', () => {
       )
     ).toMatchObject({
       id: 'direct-1',
-      url: 'https://cdn.example.test/stream?token=abc'
+      url: 'https://cdn.example.test/stream?token=abc',
+      mediaKind: 'hls'
     })
+  })
+
+  it('drops an unverified persisted ordinary HTTPS webpage', () => {
+    const storage = createMemoryStorage()
+    storage.write(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'webpage',
+        name: 'Webpage',
+        url: 'https://example.test/watch',
+        addedAt: 1000
+      }
+    ])
+
+    expect(new DirectLinkService(storage).list()).toEqual([])
+  })
+
+  it('accepts a persisted extensionless HTTPS record with a verified media kind', () => {
+    const storage = createMemoryStorage()
+    storage.write(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'hls-stream',
+        name: 'HLS stream',
+        url: 'https://cdn.example.test/stream?token=abc',
+        mediaKind: 'hls',
+        addedAt: 1000
+      }
+    ])
+
+    expect(new DirectLinkService(storage).list()).toMatchObject([
+      { id: 'hls-stream', mediaKind: 'hls' }
+    ])
   })
 
   it('lists only valid persisted records in descending addedAt order', () => {
@@ -128,6 +161,7 @@ describe('DirectLinkService', () => {
         id: 'oldest',
         name: 'Oldest',
         url: 'https://cdn.example.test/oldest.mp4',
+        mediaKind: 'mp4',
         addedAt: 1000
       },
       null,
@@ -141,6 +175,7 @@ describe('DirectLinkService', () => {
         id: 'newest',
         name: 'Newest',
         url: 'https://cdn.example.test/newest.m3u8',
+        mediaKind: 'hls',
         addedAt: 3000
       },
       {
@@ -153,6 +188,7 @@ describe('DirectLinkService', () => {
         id: 'middle',
         name: 'Middle',
         url: 'https://cdn.example.test/middle.mp4',
+        mediaKind: 'mp4',
         addedAt: 2000
       }
     ])
@@ -188,6 +224,7 @@ describe('DirectLinkService', () => {
       id: original.id,
       name: 'Replacement',
       url: 'https://cdn.example.test/replacement.m3u8?sig=abc',
+      mediaKind: 'hls',
       addedAt: original.addedAt
     })
     expect(service.list()).toEqual([updated])
@@ -203,6 +240,21 @@ describe('DirectLinkService', () => {
         url: 'https://cdn.example.test/replacement.mp4'
       })
     ).toThrow('未找到')
+  })
+
+  it('drops a persisted known-extension record whose media kind does not match', () => {
+    const storage = createMemoryStorage()
+    storage.write(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'mismatched',
+        name: 'Mismatched',
+        url: 'https://cdn.example.test/clip.mp4',
+        mediaKind: 'hls',
+        addedAt: 1000
+      }
+    ])
+
+    expect(new DirectLinkService(storage).list()).toEqual([])
   })
 
   it('removes only the requested record and clears only direct-link storage', () => {
