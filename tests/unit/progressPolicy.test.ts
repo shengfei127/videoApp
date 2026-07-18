@@ -8,6 +8,7 @@ describe('classifyProgress', () => {
     [120, 600, { completed: false, resumable: true }],
     [570, 600, { completed: true, resumable: false }],
     [571, 600, { completed: true, resumable: false }],
+    [-1, 20, { completed: false, resumable: false }],
     [120, 0, { completed: false, resumable: false }]
   ])(
     'classifies position %i for duration %i',

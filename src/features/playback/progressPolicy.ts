@@ -7,7 +7,12 @@ export function classifyProgress(
   positionSeconds: number,
   durationSeconds: number
 ): ProgressClassification {
-  if (!Number.isFinite(positionSeconds) || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+  if (
+    !Number.isFinite(positionSeconds) ||
+    positionSeconds < 0 ||
+    !Number.isFinite(durationSeconds) ||
+    durationSeconds <= 0
+  ) {
     return { completed: false, resumable: false }
   }
 
