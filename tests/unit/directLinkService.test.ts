@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   canAcceptUnknownHttpsUrl,
@@ -7,6 +7,10 @@ import {
   DIRECT_VIDEO_STORAGE_KEY
 } from '@/features/direct-links/directLinkService'
 import { createMemoryStorage } from '@/infrastructure/storage'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('classifyDirectUrl', () => {
   it.each([
@@ -34,11 +38,16 @@ describe('canAcceptUnknownHttpsUrl', () => {
 })
 
 describe('DirectLinkService', () => {
-  it('persists a normalized known media URL with an injected UUID and fallback name', () => {
+  beforeEach(() => {
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn(() => 'direct-1')
+    })
+  })
+
+  it('persists a normalized known media URL with a secure UUID and fallback name', () => {
     const storage = createMemoryStorage()
     const service = new DirectLinkService(storage, {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
 
     const record = service.add({
@@ -57,8 +66,7 @@ describe('DirectLinkService', () => {
 
   it('keeps a malformed encoded basename as the direct-link name', () => {
     const service = new DirectLinkService(createMemoryStorage(), {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
     const addMalformedLink = () =>
       service.add({ url: 'https://cdn.example.test/%zz.mp4' })
@@ -68,10 +76,8 @@ describe('DirectLinkService', () => {
   })
 
   it('trims a supplied name and falls back to the decoded basename or default title', () => {
-    let sequence = 0
     const service = new DirectLinkService(createMemoryStorage(), {
-      now: () => 1000,
-      uuidFactory: () => `direct-${++sequence}`
+      now: () => 1000
     })
 
     expect(
@@ -90,8 +96,7 @@ describe('DirectLinkService', () => {
 
   it('rejects invalid links and unknown HTTPS links without a supported probe', () => {
     const service = new DirectLinkService(createMemoryStorage(), {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
 
     expect(() =>
@@ -107,8 +112,7 @@ describe('DirectLinkService', () => {
 
   it('allows an unknown HTTPS link only when its probe has a supported media type', () => {
     const service = new DirectLinkService(createMemoryStorage(), {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
 
     expect(
@@ -151,6 +155,61 @@ describe('DirectLinkService', () => {
 
     expect(new DirectLinkService(storage).list()).toMatchObject([
       { id: 'hls-stream', mediaKind: 'hls' }
+    ])
+  })
+
+  it('normalizes only verifiable legacy records while preserving their fields', () => {
+    const storage = createMemoryStorage()
+    storage.write<unknown>(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'legacy-hls',
+        name: 'Legacy HLS',
+        url: 'https://cdn.example.test/live/index.m3u8?signature=legacy',
+        addedAt: 2000
+      },
+      {
+        id: 'legacy-mp4',
+        name: 'Legacy MP4',
+        url: 'https://cdn.example.test/movie.mp4',
+        addedAt: 1000
+      },
+      {
+        id: 'legacy-extensionless',
+        name: 'Unverified stream',
+        url: 'https://cdn.example.test/stream',
+        addedAt: 5000
+      },
+      {
+        id: 'mismatched',
+        name: 'Mismatched',
+        url: 'https://cdn.example.test/mismatched.mp4',
+        mediaKind: 'hls',
+        addedAt: 4000
+      },
+      {
+        id: 'invalid-kind',
+        name: 'Invalid kind',
+        url: 'https://cdn.example.test/invalid.mp4',
+        mediaKind: 'webm',
+        addedAt: 3000
+      }
+    ])
+
+    expect(new DirectLinkService(storage).list()).toEqual([
+      {
+        id: 'legacy-hls',
+        name: 'Legacy HLS',
+        url: 'https://cdn.example.test/live/index.m3u8?signature=legacy',
+        mediaKind: 'hls',
+        addedAt: 2000
+      },
+      {
+        id: 'legacy-mp4',
+        name: 'Legacy MP4',
+        url: 'https://cdn.example.test/movie.mp4',
+        mediaKind: 'mp4',
+        addedAt: 1000
+      }
     ])
   })
 
@@ -204,8 +263,7 @@ describe('DirectLinkService', () => {
   it('updates a record while preserving its id and addedAt', () => {
     const storage = createMemoryStorage()
     const service = new DirectLinkService(storage, {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
     const original = service.add({
       url: 'https://cdn.example.test/original.mp4',
@@ -231,9 +289,7 @@ describe('DirectLinkService', () => {
   })
 
   it('throws a user-facing error when updating an absent id', () => {
-    const service = new DirectLinkService(createMemoryStorage(), {
-      uuidFactory: () => 'direct-1'
-    })
+    const service = new DirectLinkService(createMemoryStorage())
 
     expect(() =>
       service.update('missing', {
@@ -285,12 +341,13 @@ describe('DirectLinkService', () => {
 
   it('removes only the requested record and clears only direct-link storage', () => {
     const storage = createMemoryStorage()
+    const randomUUID = vi
+      .fn()
+      .mockReturnValueOnce('direct-1')
+      .mockReturnValueOnce('direct-2')
+    vi.stubGlobal('crypto', { randomUUID })
     const service = new DirectLinkService(storage, {
-      now: () => 1000,
-      uuidFactory: (() => {
-        let index = 0
-        return () => `direct-${++index}`
-      })()
+      now: () => 1000
     })
     const keep = service.add({ url: 'https://cdn.example.test/keep.mp4' })
     const remove = service.add({ url: 'https://cdn.example.test/remove.mp4' })
@@ -312,8 +369,7 @@ describe('DirectLinkService', () => {
     storage.write(DIRECT_VIDEO_STORAGE_KEY, { unexpected: true })
     storage.write('unrelated', { preserved: true })
     const service = new DirectLinkService(storage, {
-      now: () => 1000,
-      uuidFactory: () => 'direct-1'
+      now: () => 1000
     })
 
     expect(service.list()).toEqual([])
@@ -333,6 +389,21 @@ describe('DirectLinkService', () => {
 
     expect(
       service.add({ url: 'https://cdn.example.test/default-id.mp4' }).id
+    ).toBe('crypto-uuid')
+    expect(randomUUID).toHaveBeenCalledOnce()
+  })
+
+  it('ignores an injected UUID factory and always uses guarded global crypto', () => {
+    const randomUUID = vi.fn(() => 'crypto-uuid')
+    vi.stubGlobal('crypto', { randomUUID })
+    const unsafeOptions = {
+      now: () => 1000,
+      uuidFactory: () => 'injected-uuid'
+    } as unknown as ConstructorParameters<typeof DirectLinkService>[1]
+    const service = new DirectLinkService(createMemoryStorage(), unsafeOptions)
+
+    expect(
+      service.add({ url: 'https://cdn.example.test/secure-id.mp4' }).id
     ).toBe('crypto-uuid')
     expect(randomUUID).toHaveBeenCalledOnce()
   })

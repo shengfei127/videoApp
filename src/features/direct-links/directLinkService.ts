@@ -9,7 +9,6 @@ export const DIRECT_VIDEO_STORAGE_KEY = 'pianke:direct-videos:v1'
 
 interface DirectLinkServiceOptions {
   now?: () => number
-  uuidFactory?: () => string
 }
 
 export function classifyDirectUrl(value: string): DirectUrlKind {
@@ -48,14 +47,12 @@ export function canAcceptUnknownHttpsUrl(
 
 export class DirectLinkService {
   private readonly now: () => number
-  private readonly uuidFactory: () => string
 
   constructor(
     private readonly storage: KeyValueStorage,
     options: DirectLinkServiceOptions = {}
   ) {
     this.now = options.now ?? Date.now
-    this.uuidFactory = options.uuidFactory ?? createDefaultUuid
   }
 
   add(
@@ -64,7 +61,7 @@ export class DirectLinkService {
   ): DirectVideoRecord {
     const { url, mediaKind } = this.validateUrl(input.url, probeContentType)
     const record: DirectVideoRecord = {
-      id: this.uuidFactory(),
+      id: createDefaultUuid(),
       name: resolveName(input.name, url),
       url: url.href,
       mediaKind,
@@ -84,7 +81,8 @@ export class DirectLinkService {
     }
 
     return stored
-      .filter(isDirectVideoRecord)
+      .map(normalizeDirectVideoRecord)
+      .filter((record): record is DirectVideoRecord => record !== undefined)
       .sort((left, right) => right.addedAt - left.addedAt)
   }
 
@@ -193,9 +191,11 @@ function createDefaultUuid(): string {
   return globalThis.crypto.randomUUID()
 }
 
-function isDirectVideoRecord(value: unknown): value is DirectVideoRecord {
+function normalizeDirectVideoRecord(
+  value: unknown
+): DirectVideoRecord | undefined {
   if (!value || typeof value !== 'object') {
-    return false
+    return undefined
   }
 
   const record = value as Record<string, unknown>
@@ -205,16 +205,43 @@ function isDirectVideoRecord(value: unknown): value is DirectVideoRecord {
     record.id.length === 0 ||
     typeof record.name !== 'string' ||
     typeof record.url !== 'string' ||
-    !isDirectMediaKind(record.mediaKind) ||
     typeof record.addedAt !== 'number' ||
     !Number.isFinite(record.addedAt)
   ) {
-    return false
+    return undefined
   }
 
   const kind = classifyDirectUrl(record.url)
 
-  return kind === 'unknown' || kind === record.mediaKind
+  if (kind === 'invalid') {
+    return undefined
+  }
+
+  if (kind === 'unknown') {
+    if (!isDirectMediaKind(record.mediaKind)) {
+      return undefined
+    }
+
+    return {
+      id: record.id,
+      name: record.name,
+      url: record.url,
+      mediaKind: record.mediaKind,
+      addedAt: record.addedAt
+    }
+  }
+
+  if (record.mediaKind !== undefined && record.mediaKind !== kind) {
+    return undefined
+  }
+
+  return {
+    id: record.id,
+    name: record.name,
+    url: record.url,
+    mediaKind: kind,
+    addedAt: record.addedAt
+  }
 }
 
 function isDirectMediaKind(value: unknown): value is DirectMediaKind {
