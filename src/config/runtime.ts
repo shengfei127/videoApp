@@ -9,6 +9,7 @@ export interface RuntimeConfig {
 export interface RuntimeBuildEnvironment {
   uniPlatform?: string
   nodeEnv?: string
+  devServer?: boolean
 }
 
 const DEFAULT_BAIDU_FOLDER = '片刻'
@@ -49,17 +50,14 @@ export function parseRuntimeConfig(
     baiduRedirectUri: parseBaiduRedirectUri(env.VITE_BAIDU_REDIRECT_URI),
     useMocks:
       env.VITE_USE_MOCKS === 'true' &&
-      isH5DevelopmentBuild(buildEnvironment)
+      isH5DevServer(buildEnvironment)
   }
 }
 
-export function isH5DevelopmentBuild(
+export function isH5DevServer(
   environment: RuntimeBuildEnvironment
 ): boolean {
-  return (
-    environment.uniPlatform === 'h5' &&
-    environment.nodeEnv === 'development'
-  )
+  return environment.uniPlatform === 'h5' && environment.devServer === true
 }
 
 export function readRuntimeBuildEnvironment(): RuntimeBuildEnvironment {
@@ -71,6 +69,10 @@ export function readRuntimeBuildEnvironment(): RuntimeBuildEnvironment {
     nodeEnv:
       typeof __PIANKE_BUILD_MODE__ !== 'undefined'
         ? __PIANKE_BUILD_MODE__
+        : undefined,
+    devServer:
+      typeof __PIANKE_DEV_SERVER__ !== 'undefined'
+        ? __PIANKE_DEV_SERVER__
         : undefined
   }
 }

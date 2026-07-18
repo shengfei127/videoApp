@@ -41,7 +41,8 @@ const CONFIG: RuntimeConfig = {
 }
 const H5_DEVELOPMENT = {
   uniPlatform: 'h5',
-  nodeEnv: 'development'
+  nodeEnv: 'development',
+  devServer: true
 } as const
 
 describe('app store initialization', () => {
@@ -980,12 +981,28 @@ describe('mock catalog bootstrap', () => {
   })
 
   it.each([
-    ['H5 production', { uniPlatform: 'h5', nodeEnv: 'production' }],
-    ['App development', { uniPlatform: 'app-plus', nodeEnv: 'development' }],
-    ['App production', { uniPlatform: 'app-plus', nodeEnv: 'production' }],
-    ['missing platform', { nodeEnv: 'development' }],
-    ['unknown platform', { uniPlatform: 'unknown', nodeEnv: 'development' }],
-    ['missing mode', { uniPlatform: 'h5' }]
+    [
+      'H5 development release build',
+      { uniPlatform: 'h5', nodeEnv: 'development', devServer: false }
+    ],
+    [
+      'H5 production release build',
+      { uniPlatform: 'h5', nodeEnv: 'production', devServer: false }
+    ],
+    [
+      'App dev server',
+      { uniPlatform: 'app-plus', nodeEnv: 'development', devServer: true }
+    ],
+    [
+      'App production build',
+      { uniPlatform: 'app-plus', nodeEnv: 'production', devServer: false }
+    ],
+    ['missing platform', { nodeEnv: 'development', devServer: true }],
+    [
+      'unknown platform',
+      { uniPlatform: 'unknown', nodeEnv: 'development', devServer: true }
+    ],
+    ['missing dev server flag', { uniPlatform: 'h5', nodeEnv: 'development' }]
   ] as const)(
     'returns before inspecting a scenario in %s',
     (_case, environment) => {
@@ -1068,14 +1085,15 @@ describe('mock catalog bootstrap', () => {
     expect(JSON.stringify(context.store.lastError)).not.toContain('dlink')
   })
 
-  it('refuses a manually forged mock config in an App development build', async () => {
+  it('refuses a manually forged mock config on an App dev server', async () => {
     const context = createTestContext('mocks-app-denied-store', {
       config: { ...CONFIG, useMocks: true },
       bootstrapMocks,
       mockScenario: 'resume',
       mockEnvironment: {
         uniPlatform: 'app-plus',
-        nodeEnv: 'development'
+        nodeEnv: 'development',
+        devServer: true
       }
     })
 

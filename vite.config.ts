@@ -11,7 +11,7 @@ const uni = (
   (uniModule as unknown as { default?: UniPluginFactory }).default ?? uniModule
 ) as unknown as UniPluginFactory
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode, command }) => ({
   plugins: [uni()],
-  define: createPiankeBuildDefines(process.env.UNI_PLATFORM, mode)
+  define: createPiankeBuildDefines(process.env.UNI_PLATFORM, mode, command)
 }))

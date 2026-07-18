@@ -1,5 +1,5 @@
 import {
-  isH5DevelopmentBuild,
+  isH5DevServer,
   readRuntimeBuildEnvironment,
   type RuntimeBuildEnvironment,
   type RuntimeConfig
@@ -35,7 +35,7 @@ export function bootstrapMocks(
     return null
   }
 
-  if (!isH5DevelopmentBuild(environment)) {
+  if (!isH5DevServer(environment)) {
     return null
   }
 

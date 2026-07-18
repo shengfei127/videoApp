@@ -8,35 +8,51 @@ import {
 import { createPiankeBuildDefines } from '@/config/buildConstants'
 
 describe('parseRuntimeConfig', () => {
-  it('transforms H5 development build constants into browser literals', async () => {
-    const define = createPiankeBuildDefines('h5', 'development')
-    const transformed = await transform(
-      `
-        globalThis.__PIANKE_TRANSFORM_RESULT__ = {
-          platform: typeof __PIANKE_UNI_PLATFORM__ !== 'undefined'
-            ? __PIANKE_UNI_PLATFORM__
-            : undefined,
-          mode: typeof __PIANKE_BUILD_MODE__ !== 'undefined'
-            ? __PIANKE_BUILD_MODE__
-            : undefined
-        }
-      `,
-      { define, format: 'esm' }
-    )
+  it.each([
+    ['serve', 'development', true],
+    ['build', 'development', false],
+    ['build', 'production', false]
+  ] as const)(
+    'transforms H5 %s constants into browser literals for %s mode',
+    async (command, mode, expectedDevServer) => {
+      const define = createPiankeBuildDefines('h5', mode, command)
+      const transformed = await transform(
+        `
+          globalThis.__PIANKE_TRANSFORM_RESULT__ = {
+            platform: typeof __PIANKE_UNI_PLATFORM__ !== 'undefined'
+              ? __PIANKE_UNI_PLATFORM__
+              : undefined,
+            mode: typeof __PIANKE_BUILD_MODE__ !== 'undefined'
+              ? __PIANKE_BUILD_MODE__
+              : undefined,
+            devServer: typeof __PIANKE_DEV_SERVER__ !== 'undefined'
+              ? __PIANKE_DEV_SERVER__
+              : undefined
+          }
+        `,
+        { define, format: 'esm' }
+      )
 
-    expect(define).toEqual({
-      __PIANKE_UNI_PLATFORM__: JSON.stringify('h5'),
-      __PIANKE_BUILD_MODE__: JSON.stringify('development')
-    })
-    Function(transformed.code)()
-    expect(
-      (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
-    ).toEqual({ platform: 'h5', mode: 'development' })
-    delete (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
-    expect(transformed.code).not.toContain('__PIANKE_UNI_PLATFORM__')
-    expect(transformed.code).not.toContain('__PIANKE_BUILD_MODE__')
-    expect(transformed.code).not.toContain('typeof process')
-  })
+      expect(define).toEqual({
+        __PIANKE_UNI_PLATFORM__: JSON.stringify('h5'),
+        __PIANKE_BUILD_MODE__: JSON.stringify(mode),
+        __PIANKE_DEV_SERVER__: JSON.stringify(expectedDevServer)
+      })
+      Function(transformed.code)()
+      expect(
+        (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
+      ).toEqual({
+        platform: 'h5',
+        mode,
+        devServer: expectedDevServer
+      })
+      delete (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
+      expect(transformed.code).not.toContain('__PIANKE_UNI_PLATFORM__')
+      expect(transformed.code).not.toContain('__PIANKE_BUILD_MODE__')
+      expect(transformed.code).not.toContain('__PIANKE_DEV_SERVER__')
+      expect(transformed.code).not.toContain('typeof process')
+    }
+  )
 
   it('reads browser compile constants without depending on a runtime process global', () => {
     const previousPlatform = process.env.UNI_PLATFORM
@@ -45,11 +61,13 @@ describe('parseRuntimeConfig', () => {
     process.env.NODE_ENV = 'production'
     vi.stubGlobal('__PIANKE_UNI_PLATFORM__', 'h5')
     vi.stubGlobal('__PIANKE_BUILD_MODE__', 'development')
+    vi.stubGlobal('__PIANKE_DEV_SERVER__', true)
 
     try {
       expect(readRuntimeBuildEnvironment()).toEqual({
         uniPlatform: 'h5',
-        nodeEnv: 'development'
+        nodeEnv: 'development',
+        devServer: true
       })
     } finally {
       restoreProcessEnvironment('UNI_PLATFORM', previousPlatform)
@@ -127,29 +145,48 @@ describe('parseRuntimeConfig', () => {
     ).toBe('https://localhost/pianke/oauth/baidu')
   })
 
-  it('enables explicit mocks only for an H5 development build', () => {
+  it('enables explicit mocks only for an H5 dev server', () => {
     expect(
       parseRuntimeConfig(
         { VITE_USE_MOCKS: 'true' },
-        { uniPlatform: 'h5', nodeEnv: 'development' }
+        { uniPlatform: 'h5', nodeEnv: 'development', devServer: true }
       ).useMocks
     ).toBe(true)
     expect(
       parseRuntimeConfig(
         { VITE_USE_MOCKS: 'false' },
-        { uniPlatform: 'h5', nodeEnv: 'development' }
+        { uniPlatform: 'h5', nodeEnv: 'development', devServer: true }
       ).useMocks
     ).toBe(false)
   })
 
   it.each([
-    ['H5 production', { uniPlatform: 'h5', nodeEnv: 'production' }],
-    ['App development', { uniPlatform: 'app-plus', nodeEnv: 'development' }],
-    ['App production', { uniPlatform: 'app-plus', nodeEnv: 'production' }],
-    ['missing platform', { nodeEnv: 'development' }],
-    ['unknown platform', { uniPlatform: 'unknown', nodeEnv: 'development' }],
-    ['missing mode', { uniPlatform: 'h5' }],
-    ['test mode', { uniPlatform: 'h5', nodeEnv: 'test' }]
+    [
+      'H5 development release build',
+      { uniPlatform: 'h5', nodeEnv: 'development', devServer: false }
+    ],
+    [
+      'H5 production release build',
+      { uniPlatform: 'h5', nodeEnv: 'production', devServer: false }
+    ],
+    [
+      'App dev server',
+      { uniPlatform: 'app-plus', nodeEnv: 'development', devServer: true }
+    ],
+    [
+      'App production build',
+      { uniPlatform: 'app-plus', nodeEnv: 'production', devServer: false }
+    ],
+    ['missing platform', { nodeEnv: 'development', devServer: true }],
+    [
+      'unknown platform',
+      { uniPlatform: 'unknown', nodeEnv: 'development', devServer: true }
+    ],
+    ['missing dev server flag', { uniPlatform: 'h5', nodeEnv: 'development' }],
+    [
+      'H5 test release build',
+      { uniPlatform: 'h5', nodeEnv: 'test', devServer: false }
+    ]
   ] as const)('keeps mocks disabled for %s', (_case, buildEnvironment) => {
     expect(
       parseRuntimeConfig(
