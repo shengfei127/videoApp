@@ -55,6 +55,35 @@ describe('AuthRepository sessions', () => {
     expect(repository.getValidSession(99_999)).toEqual(VALID_SESSION)
   })
 
+  it.each([-1, 100_000.5, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses to persist an invalid expiresAt timestamp: %s',
+    (expiresAt) => {
+      const storage = createMemoryStorage()
+      const repository = new AuthRepository(storage)
+      preserveUnrelatedData(storage)
+
+      expect(() =>
+        repository.saveSession({ ...VALID_SESSION, expiresAt })
+      ).toThrow('百度网盘授权会话无效')
+      expect(storage.read(AUTH_STORAGE_KEY, null)).toBeNull()
+      expectUnrelatedDataPreserved(storage)
+    }
+  )
+
+  it.each([-1, 1000.5, Number.MAX_SAFE_INTEGER + 1])(
+    'removes auth for an invalid current timestamp: %s',
+    (now) => {
+      const storage = createMemoryStorage()
+      const repository = new AuthRepository(storage)
+      preserveUnrelatedData(storage)
+      repository.saveSession(VALID_SESSION)
+
+      expect(repository.getValidSession(now)).toBeNull()
+      expect(storage.read(AUTH_STORAGE_KEY, null)).toBeNull()
+      expectUnrelatedDataPreserved(storage)
+    }
+  )
+
   it('removes only expired auth data', () => {
     const storage = createMemoryStorage()
     const repository = new AuthRepository(storage)
@@ -70,6 +99,9 @@ describe('AuthRepository sessions', () => {
     null,
     { ...VALID_SESSION, accessToken: '' },
     { ...VALID_SESSION, accessToken: '   ' },
+    { ...VALID_SESSION, expiresAt: -1 },
+    { ...VALID_SESSION, expiresAt: 100_000.5 },
+    { ...VALID_SESSION, expiresAt: Number.MAX_SAFE_INTEGER + 1 },
     { ...VALID_SESSION, expiresAt: Number.POSITIVE_INFINITY },
     { ...VALID_SESSION, scope: 'basic netdisk' },
     { ...VALID_SESSION, scope: ['basic'] },

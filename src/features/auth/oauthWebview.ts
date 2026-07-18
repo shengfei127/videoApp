@@ -1,12 +1,22 @@
+import { OAuthCancellationError } from './oauth'
+
 const OAUTH_WEBVIEW_ID = 'pianke-baidu-oauth'
 const MOCK_ACCESS_TOKEN = 'mock-baidu-access-token'
+
+export interface OAuthPendingState {
+  state: string
+}
 
 export interface OpenOAuthWebviewOptions {
   authorizeUrl: string
   redirectUri: string
   mockMode?: boolean
-  onCallback: (callbackUrl: string) => void | Promise<void>
-  createPendingState: () => void
+  onCallback: (
+    callbackUrl: string,
+    pendingState: OAuthPendingState
+  ) => void | Promise<void>
+  createPendingState: () => OAuthPendingState
+  consumePendingState: () => OAuthPendingState | null
   clearPendingState: () => void
   onCancel?: () => void
   onCallbackFailure?: () => void
@@ -35,6 +45,12 @@ interface AppWebviewApi {
   ): AppOAuthWebview
   getWebviewById?(id: string): AppOAuthWebview | null
 }
+
+type FailureNotifier = () => void
+
+type SynchronousResult<T> =
+  | { ok: true; value: T }
+  | { ok: false }
 
 let activeHandle: OAuthWebviewHandle | null = null
 
@@ -81,33 +97,63 @@ export function openOAuthWebview(
 function openAppOAuthWebview(
   options: OpenOAuthWebviewOptions
 ): OAuthWebviewHandle {
+  const notifyFailure = createFailureNotifier(options)
+  const authorizeState = readAuthorizeState(options.authorizeUrl)
+
+  if (!authorizeState) {
+    rollbackPendingState(options)
+    notifyFailure()
+    return createDisabledHandle()
+  }
+
   const webviewApi = plus.webview as unknown as AppWebviewApi
-  const staleWebview = webviewApi.getWebviewById?.(OAUTH_WEBVIEW_ID)
+  let staleWebview: AppOAuthWebview | null | undefined
+
+  try {
+    staleWebview = webviewApi.getWebviewById?.(OAUTH_WEBVIEW_ID)
+  } catch {
+    rollbackPendingState(options)
+    notifyFailure()
+    return createDisabledHandle()
+  }
 
   if (staleWebview) {
-    let staleStateCleared = false
-    try {
-      staleStateCleared = clearPendingStateSafely(options)
-    } finally {
-      safeClose(staleWebview)
-    }
+    const staleStateCleared = callSynchronously(
+      options.clearPendingState
+    ).ok
+    const staleWebviewClosed = safeClose(staleWebview)
 
-    if (!staleStateCleared) {
+    if (!staleStateCleared || !staleWebviewClosed) {
+      notifyFailure()
       return createDisabledHandle()
     }
   }
 
-  if (!createPendingStateSafely(options)) {
+  const createdPending = createPendingState(
+    options,
+    authorizeState,
+    notifyFailure
+  )
+  if (!createdPending) {
     return createDisabledHandle()
   }
 
-  const webview = webviewApi.create(options.authorizeUrl, OAUTH_WEBVIEW_ID, {
-    titleNView: {
-      titleText: '连接百度网盘',
-      autoBackButton: true
-    }
-  })
+  let webview: AppOAuthWebview
+  try {
+    webview = webviewApi.create(options.authorizeUrl, OAUTH_WEBVIEW_ID, {
+      titleNView: {
+        titleText: '连接百度网盘',
+        autoBackButton: true
+      }
+    })
+  } catch {
+    rollbackPendingState(options)
+    notifyFailure()
+    return createDisabledHandle()
+  }
+
   let settled = false
+  let closeAttempted = false
   let handle: OAuthWebviewHandle
 
   const release = (): void => {
@@ -116,63 +162,110 @@ function openAppOAuthWebview(
     }
   }
 
-  const cancel = (): void => {
+  const closeWebviewOnce = (): boolean => {
+    if (closeAttempted) {
+      return true
+    }
+
+    closeAttempted = true
+    return safeClose(webview)
+  }
+
+  const cancel = (alreadyClosed: boolean): void => {
     if (settled) {
       return
     }
 
     settled = true
     release()
-    if (!clearPendingStateSafely(options)) {
+    if (alreadyClosed) {
+      closeAttempted = true
+    }
+
+    const pendingCleared = clearPendingState(options, notifyFailure)
+    const webviewClosed = alreadyClosed || closeWebviewOnce()
+    if (!pendingCleared || !webviewClosed) {
+      if (!webviewClosed) {
+        notifyFailure()
+      }
       return
     }
 
-    notifyCancellationSafely(options)
+    notifyCancellationSafely(options, notifyFailure)
+  }
+
+  const acceptCallback = (event: { url: string }): void => {
+    if (
+      settled ||
+      !isRegisteredOAuthCallback(event.url, options.redirectUri)
+    ) {
+      return
+    }
+
+    settled = true
+    release()
+    const consumedPending = consumePendingState(
+      options,
+      createdPending,
+      notifyFailure
+    )
+    const webviewClosed = closeWebviewOnce()
+
+    if (!consumedPending || !webviewClosed) {
+      if (!webviewClosed) {
+        notifyFailure()
+      }
+      return
+    }
+
+    invokeOAuthCallback(
+      options,
+      event.url,
+      consumedPending,
+      notifyFailure
+    )
   }
 
   handle = {
     enabled: true,
-    close: (): void => {
-      if (settled) {
-        return
-      }
-
-      try {
-        cancel()
-      } finally {
-        safeClose(webview)
-      }
-    }
+    close: (): void => cancel(false)
   }
 
-  webview.addEventListener('close', cancel)
-  webview.overrideUrlLoading(
-    {
-      mode: 'reject',
-      match: buildRedirectMatchPattern(options.redirectUri)
-    },
-    (event) => {
-      if (
-        settled ||
-        !isRegisteredOAuthCallback(event.url, options.redirectUri)
-      ) {
-        return
-      }
-
+  const failLaunch = (): OAuthWebviewHandle => {
+    if (!settled) {
       settled = true
       release()
-      if (!clearPendingStateSafely(options)) {
-        safeClose(webview)
-        return
-      }
-
-      Promise.resolve()
-        .then(() => options.onCallback(event.url))
-        .catch(() => notifyCallbackFailureSafely(options))
-        .finally(() => safeClose(webview))
+      rollbackPendingState(options)
+      closeWebviewOnce()
+      notifyFailure()
     }
-  )
-  webview.show('slide-in-right')
+    return createDisabledHandle()
+  }
+
+  try {
+    webview.addEventListener('close', () => cancel(true))
+    if (settled) {
+      return createDisabledHandle()
+    }
+
+    webview.overrideUrlLoading(
+      {
+        mode: 'reject',
+        match: buildRedirectMatchPattern(options.redirectUri)
+      },
+      acceptCallback
+    )
+    if (settled) {
+      return createDisabledHandle()
+    }
+
+    webview.show('slide-in-right')
+    if (settled) {
+      return createDisabledHandle()
+    }
+  } catch {
+    return failLaunch()
+  }
 
   return handle
 }
@@ -184,12 +277,26 @@ function openH5OAuthMock(
     return createDisabledHandle()
   }
 
-  if (!createPendingStateSafely(options)) {
+  const notifyFailure = createFailureNotifier(options)
+  const authorizeState = readAuthorizeState(options.authorizeUrl)
+  if (!authorizeState) {
+    rollbackPendingState(options)
+    notifyFailure()
+    return createDisabledHandle()
+  }
+
+  const createdPending = createPendingState(
+    options,
+    authorizeState,
+    notifyFailure
+  )
+  if (!createdPending) {
     return createDisabledHandle()
   }
 
   let settled = false
   let handle: OAuthWebviewHandle
+
   const release = (): void => {
     if (activeHandle === handle) {
       activeHandle = null
@@ -205,42 +312,184 @@ function openH5OAuthMock(
 
       settled = true
       release()
-      if (!clearPendingStateSafely(options)) {
+      if (!clearPendingState(options, notifyFailure)) {
         return
       }
 
-      notifyCancellationSafely(options)
+      notifyCancellationSafely(options, notifyFailure)
     }
   }
 
-  Promise.resolve()
-    .then(() => {
-      if (settled) {
-        return
-      }
+  Promise.resolve().then(() => {
+    if (settled) {
+      return
+    }
 
-      settled = true
-      release()
-      if (!clearPendingStateSafely(options)) {
-        return
-      }
+    settled = true
+    release()
+    const consumedPending = consumePendingState(
+      options,
+      createdPending,
+      notifyFailure
+    )
+    if (!consumedPending) {
+      return
+    }
 
-      return options.onCallback(createMockCallbackUrl(options))
-    })
-    .catch(() => notifyCallbackFailureSafely(options))
+    invokeOAuthCallback(
+      options,
+      createMockCallbackUrl(options),
+      consumedPending,
+      notifyFailure
+    )
+  })
 
   return handle
 }
 
-function createMockCallbackUrl(options: OpenOAuthWebviewOptions): string {
-  let state = ''
+function createPendingState(
+  options: OpenOAuthWebviewOptions,
+  authorizeState: string,
+  notifyFailure: FailureNotifier
+): OAuthPendingState | null {
+  const result = callSynchronously(options.createPendingState)
+  const pending = result.ok ? validatePendingState(result.value) : null
 
-  try {
-    state = new URL(options.authorizeUrl).searchParams.get('state') ?? ''
-  } catch {
-    // The pure callback parser will reject the empty synthetic state safely.
+  if (!pending || pending.state !== authorizeState) {
+    rollbackPendingState(options)
+    notifyFailure()
+    return null
   }
 
+  return pending
+}
+
+function consumePendingState(
+  options: OpenOAuthWebviewOptions,
+  createdPending: OAuthPendingState,
+  notifyFailure: FailureNotifier
+): OAuthPendingState | null {
+  const result = callSynchronously(options.consumePendingState)
+  const pending = result.ok ? validatePendingState(result.value) : null
+
+  if (!pending || pending.state !== createdPending.state) {
+    rollbackPendingState(options)
+    notifyFailure()
+    return null
+  }
+
+  return pending
+}
+
+function clearPendingState(
+  options: OpenOAuthWebviewOptions,
+  notifyFailure: FailureNotifier
+): boolean {
+  const succeeded = callSynchronously(options.clearPendingState).ok
+  if (!succeeded) {
+    notifyFailure()
+  }
+  return succeeded
+}
+
+function rollbackPendingState(options: OpenOAuthWebviewOptions): void {
+  callSynchronously(options.clearPendingState)
+}
+
+function validatePendingState(value: unknown): OAuthPendingState | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const pending = value as Record<string, unknown>
+  return typeof pending.state === 'string' && pending.state.trim()
+    ? (value as OAuthPendingState)
+    : null
+}
+
+function callSynchronously<T>(callback: () => T): SynchronousResult<T> {
+  try {
+    const value = (callback as () => unknown)()
+    if (isThenable(value)) {
+      containRejection(value)
+      return { ok: false }
+    }
+
+    return { ok: true, value: value as T }
+  } catch {
+    return { ok: false }
+  }
+}
+
+function invokeOAuthCallback(
+  options: OpenOAuthWebviewOptions,
+  callbackUrl: string,
+  pendingState: OAuthPendingState,
+  notifyFailure: FailureNotifier
+): void {
+  void Promise.resolve()
+    .then(() => options.onCallback(callbackUrl, pendingState))
+    .catch((error: unknown) => {
+      if (error instanceof OAuthCancellationError) {
+        notifyCancellationSafely(options, notifyFailure)
+        return
+      }
+
+      notifyFailure()
+    })
+}
+
+function createFailureNotifier(
+  options: OpenOAuthWebviewOptions
+): FailureNotifier {
+  let notified = false
+
+  return (): void => {
+    if (notified) {
+      return
+    }
+
+    notified = true
+    invokeOptionalCallback(options.onCallbackFailure)
+  }
+}
+
+function notifyCancellationSafely(
+  options: OpenOAuthWebviewOptions,
+  notifyFailure: FailureNotifier
+): void {
+  try {
+    const result = (options.onCancel as (() => unknown) | undefined)?.()
+    if (isThenable(result)) {
+      containRejection(result, notifyFailure)
+    }
+  } catch {
+    notifyFailure()
+  }
+}
+
+function invokeOptionalCallback(callback: (() => void) | undefined): void {
+  try {
+    const result = (callback as (() => unknown) | undefined)?.()
+    if (isThenable(result)) {
+      containRejection(result)
+    }
+  } catch {
+    // User callback errors are intentionally contained and redacted.
+  }
+}
+
+function readAuthorizeState(authorizeUrl: string): string | null {
+  try {
+    const state = new URL(authorizeUrl).searchParams.get('state')
+    return state?.trim() ? state : null
+  } catch {
+    return null
+  }
+}
+
+function createMockCallbackUrl(options: OpenOAuthWebviewOptions): string {
+  const state = readAuthorizeState(options.authorizeUrl) ?? ''
   const callback = new URL(options.redirectUri)
   callback.hash = new URLSearchParams({
     access_token: MOCK_ACCESS_TOKEN,
@@ -261,37 +510,11 @@ function escapeRegularExpression(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }
 
-function safeClose(webview: AppOAuthWebview): void {
+function safeClose(webview: AppOAuthWebview): boolean {
   try {
     webview.close('slide-out-right')
-  } catch {
-    // Closing is best-effort during lifecycle cleanup.
-  }
-}
-
-function clearPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
-  return invokeSynchronousLifecycle(options.clearPendingState, options)
-}
-
-function createPendingStateSafely(options: OpenOAuthWebviewOptions): boolean {
-  return invokeSynchronousLifecycle(options.createPendingState, options)
-}
-
-function invokeSynchronousLifecycle(
-  callback: () => void,
-  options: OpenOAuthWebviewOptions
-): boolean {
-  try {
-    const result = (callback as () => unknown)()
-    if (isThenable(result)) {
-      containRejection(result)
-      notifyCallbackFailureSafely(options)
-      return false
-    }
-
     return true
   } catch {
-    notifyCallbackFailureSafely(options)
     return false
   }
 }
@@ -300,30 +523,6 @@ function createDisabledHandle(): OAuthWebviewHandle {
   return {
     enabled: false,
     close: () => undefined
-  }
-}
-
-function notifyCancellationSafely(options: OpenOAuthWebviewOptions): void {
-  try {
-    const result = (options.onCancel as (() => unknown) | undefined)?.()
-    if (isThenable(result)) {
-      containRejection(result, () => notifyCallbackFailureSafely(options))
-    }
-  } catch {
-    notifyCallbackFailureSafely(options)
-  }
-}
-
-function notifyCallbackFailureSafely(options: OpenOAuthWebviewOptions): void {
-  try {
-    const result = (
-      options.onCallbackFailure as (() => unknown) | undefined
-    )?.()
-    if (isThenable(result)) {
-      containRejection(result)
-    }
-  } catch {
-    // User callbacks never escape lifecycle cleanup or expose their details.
   }
 }
 

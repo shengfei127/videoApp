@@ -28,7 +28,12 @@ export class AuthRepository {
       this.storage.read<unknown>(AUTH_STORAGE_KEY, null)
     )
 
-    if (!session || !Number.isFinite(now) || session.expiresAt <= now) {
+    if (
+      !session ||
+      !Number.isSafeInteger(now) ||
+      now < 0 ||
+      session.expiresAt <= now
+    ) {
       this.storage.remove(AUTH_STORAGE_KEY)
       return null
     }
@@ -85,7 +90,8 @@ function validateSession(value: unknown): BaiduAuthSession | null {
     typeof session.accessToken !== 'string' ||
     !session.accessToken.trim() ||
     typeof session.expiresAt !== 'number' ||
-    !Number.isFinite(session.expiresAt) ||
+    !Number.isSafeInteger(session.expiresAt) ||
+    session.expiresAt < 0 ||
     !Array.isArray(session.scope) ||
     !session.scope.every((scope) => typeof scope === 'string') ||
     !session.scope.includes('basic') ||
