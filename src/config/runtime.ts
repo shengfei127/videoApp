@@ -65,9 +65,13 @@ export function isH5DevelopmentBuild(
 export function readRuntimeBuildEnvironment(): RuntimeBuildEnvironment {
   return {
     uniPlatform:
-      typeof process !== 'undefined' ? process.env.UNI_PLATFORM : undefined,
+      typeof __PIANKE_UNI_PLATFORM__ !== 'undefined'
+        ? __PIANKE_UNI_PLATFORM__
+        : undefined,
     nodeEnv:
-      typeof process !== 'undefined' ? process.env.NODE_ENV : undefined
+      typeof __PIANKE_BUILD_MODE__ !== 'undefined'
+        ? __PIANKE_BUILD_MODE__
+        : undefined
   }
 }
 

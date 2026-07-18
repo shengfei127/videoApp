@@ -1,8 +1,62 @@
-import { describe, expect, it } from 'vitest'
+import { transform } from 'esbuild'
+import { describe, expect, it, vi } from 'vitest'
 
-import { parseRuntimeConfig } from '@/config/runtime'
+import {
+  parseRuntimeConfig,
+  readRuntimeBuildEnvironment
+} from '@/config/runtime'
+import { createPiankeBuildDefines } from '@/config/buildConstants'
 
 describe('parseRuntimeConfig', () => {
+  it('transforms H5 development build constants into browser literals', async () => {
+    const define = createPiankeBuildDefines('h5', 'development')
+    const transformed = await transform(
+      `
+        globalThis.__PIANKE_TRANSFORM_RESULT__ = {
+          platform: typeof __PIANKE_UNI_PLATFORM__ !== 'undefined'
+            ? __PIANKE_UNI_PLATFORM__
+            : undefined,
+          mode: typeof __PIANKE_BUILD_MODE__ !== 'undefined'
+            ? __PIANKE_BUILD_MODE__
+            : undefined
+        }
+      `,
+      { define, format: 'esm' }
+    )
+
+    expect(define).toEqual({
+      __PIANKE_UNI_PLATFORM__: JSON.stringify('h5'),
+      __PIANKE_BUILD_MODE__: JSON.stringify('development')
+    })
+    Function(transformed.code)()
+    expect(
+      (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
+    ).toEqual({ platform: 'h5', mode: 'development' })
+    delete (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
+    expect(transformed.code).not.toContain('__PIANKE_UNI_PLATFORM__')
+    expect(transformed.code).not.toContain('__PIANKE_BUILD_MODE__')
+    expect(transformed.code).not.toContain('typeof process')
+  })
+
+  it('reads browser compile constants without depending on a runtime process global', () => {
+    const previousPlatform = process.env.UNI_PLATFORM
+    const previousMode = process.env.NODE_ENV
+    process.env.UNI_PLATFORM = 'app-plus'
+    process.env.NODE_ENV = 'production'
+    vi.stubGlobal('__PIANKE_UNI_PLATFORM__', 'h5')
+    vi.stubGlobal('__PIANKE_BUILD_MODE__', 'development')
+
+    try {
+      expect(readRuntimeBuildEnvironment()).toEqual({
+        uniPlatform: 'h5',
+        nodeEnv: 'development'
+      })
+    } finally {
+      restoreProcessEnvironment('UNI_PLATFORM', previousPlatform)
+      restoreProcessEnvironment('NODE_ENV', previousMode)
+    }
+  })
+
   it('normalizes the Baidu app folder into an allowed root', () => {
     expect(
       parseRuntimeConfig({
@@ -105,3 +159,14 @@ describe('parseRuntimeConfig', () => {
     ).toBe(false)
   })
 })
+
+function restoreProcessEnvironment(
+  key: 'UNI_PLATFORM' | 'NODE_ENV',
+  value: string | undefined
+): void {
+  if (value === undefined) {
+    delete process.env[key]
+  } else {
+    process.env[key] = value
+  }
+}

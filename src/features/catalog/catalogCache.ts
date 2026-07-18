@@ -8,7 +8,7 @@ export const CATALOG_REFRESH_COOLDOWN_MS = 60 * 1000
 const UINT64_MAX = '18446744073709551615'
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/u
 const SAFE_APP_ROOT = /^\/apps\/[\p{L}\p{N} _-]{1,20}$/u
-const RECORD_KEYS = new Set(['videos', 'savedAt', 'requestStartedAt'])
+const RECORD_KEYS = new Set(['root', 'videos', 'savedAt', 'requestStartedAt'])
 const VIDEO_KEYS = new Set([
   'id',
   'sourceType',
@@ -37,6 +37,7 @@ export interface CatalogCacheOptions {
 }
 
 interface PersistedCatalogCache {
+  root: string
   videos: VideoItem[]
   savedAt?: number
   requestStartedAt?: number
@@ -114,6 +115,7 @@ export class CatalogCache {
     }
 
     this.storage.write(CATALOG_CACHE_KEY, {
+      root: this.root,
       videos: cloneVideos(record?.videos ?? []),
       ...(record?.savedAt !== undefined ? { savedAt: record.savedAt } : {}),
       requestStartedAt: now
@@ -135,6 +137,7 @@ export class CatalogCache {
 
     const requestStartedAt = this.readRecord()?.requestStartedAt
     const record: PersistedCatalogCache = {
+      root: this.root,
       videos: sanitizedVideos,
       savedAt: now,
       ...(requestStartedAt !== undefined ? { requestStartedAt } : {})
@@ -175,6 +178,7 @@ function validateRecord(
   if (
     !isRecord(value) ||
     Object.keys(value).some((key) => !RECORD_KEYS.has(key)) ||
+    value.root !== root ||
     !Array.isArray(value.videos)
   ) {
     return null
@@ -201,6 +205,7 @@ function validateRecord(
   }
 
   return {
+    root,
     videos,
     ...(savedAt.value !== undefined ? { savedAt: savedAt.value } : {}),
     ...(requestStartedAt.value !== undefined

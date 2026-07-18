@@ -31,9 +31,14 @@ import {
 } from '@/mocks/bootstrap'
 
 const BAIDU_PAGE_SIZE = 1000
-const MAX_BAIDU_CATALOG_PAGES = 1000
+const MAX_BAIDU_CATALOG_PAGES = 100
 
-export type AppSyncStatus = 'idle' | 'syncing' | 'success' | 'error'
+export type AppSyncStatus =
+  | 'idle'
+  | 'syncing'
+  | 'success'
+  | 'cooldown'
+  | 'error'
 
 export type AppSafeErrorCode =
   | 'initialization'
@@ -59,6 +64,13 @@ export type SyncBaiduResult =
     }
   | { ok: false; reason: 'no-session' | 'active' | 'failed' | 'authorization' }
   | { ok: false; reason: 'cooldown'; retryAt: number }
+
+type SyncTransition =
+  | { state: 'idle' }
+  | { state: 'syncing'; startedAt: number }
+  | { state: 'success' }
+  | { state: 'cooldown'; retryAt: number }
+  | { state: 'error'; error: 'authorization' | 'sync-failed' }
 
 interface AuthSessionRepository {
   getValidSession(now: number): BaiduAuthSession | null
@@ -184,6 +196,31 @@ export function createAppStore(
     }
 
     async function runInitialization(): Promise<void> {
+      if (dependencies.config.useMocks) {
+        try {
+          const mockData = (
+            dependencies.bootstrapMocks ?? runBootstrapMocks
+          )(dependencies.config, {
+            ...(dependencies.mockScenario !== undefined
+              ? { scenario: dependencies.mockScenario }
+              : {}),
+            ...(dependencies.mockEnvironment !== undefined
+              ? { environment: dependencies.mockEnvironment }
+              : {})
+          })
+
+          if (!mockData) {
+            lastError.value = safeError('initialization')
+            return
+          }
+
+          applyMockData(mockData)
+        } catch {
+          lastError.value = safeError('initialization')
+        }
+        return
+      }
+
       let localLoadFailed = false
       const now = dependencies.now()
 
@@ -236,34 +273,6 @@ export function createAppStore(
         localLoadFailed = true
       }
 
-      if (dependencies.config.useMocks) {
-        try {
-          const mockData = (
-            dependencies.bootstrapMocks ?? runBootstrapMocks
-          )(dependencies.config, {
-            ...(dependencies.mockScenario !== undefined
-              ? { scenario: dependencies.mockScenario }
-              : {}),
-            ...(dependencies.mockEnvironment !== undefined
-              ? { environment: dependencies.mockEnvironment }
-              : {})
-          })
-
-          if (!mockData) {
-            lastError.value = safeError('initialization')
-            return
-          }
-
-          applyMockData(mockData)
-          if (localLoadFailed && !mockData.mockBaiduError) {
-            lastError.value = safeError('initialization')
-          }
-        } catch {
-          lastError.value = safeError('initialization')
-        }
-        return
-      }
-
       if (
         authSession.value &&
         (baiduCacheSavedAt.value === null ||
@@ -284,25 +293,29 @@ export function createAppStore(
 
       const now = dependencies.now()
       const session = authSession.value
-      if (!session || !isValidSessionAt(session, now)) {
-        if (session) {
-          try {
-            dependencies.authRepository.clearSession()
-          } catch {
-            // State still fails closed even when local cleanup is unavailable.
-          }
+      if (!session) {
+        transitionSync({ state: 'idle' })
+        return { ok: false, reason: 'no-session' }
+      }
+
+      if (!isValidSessionAt(session, now)) {
+        try {
+          dependencies.authRepository.clearSession()
+        } catch {
+          // State still fails closed even when local cleanup is unavailable.
         }
         authSession.value = null
-        return { ok: false, reason: 'no-session' }
+        transitionSync({ state: 'error', error: 'authorization' })
+        return { ok: false, reason: 'authorization' }
       }
 
       if (dependencies.config.useMocks) {
         if (mockBaiduErrorActive.value) {
-          syncStatus.value = 'error'
-          lastError.value = safeError('sync-failed')
+          transitionSync({ state: 'error', error: 'sync-failed' })
           return { ok: false, reason: 'failed' }
         }
 
+        transitionSync({ state: 'success' })
         return {
           ok: true,
           refreshed: false,
@@ -316,6 +329,7 @@ export function createAppStore(
         baiduCacheSavedAt.value !== null &&
         dependencies.catalogCache.isFresh(baiduCacheSavedAt.value)
       ) {
+        transitionSync({ state: 'success' })
         return {
           ok: true,
           refreshed: false,
@@ -328,14 +342,16 @@ export function createAppStore(
       try {
         requestStart = dependencies.catalogCache.beginRequest()
       } catch {
-        syncStatus.value = 'error'
-        lastError.value = safeError('sync-failed')
+        transitionSync({ state: 'error', error: 'sync-failed' })
         return { ok: false, reason: 'failed' }
       }
 
       if (!requestStart.started) {
         if (requestStart.reason === 'cooldown') {
-          nextSyncAllowedAt.value = requestStart.retryAt
+          transitionSync({
+            state: 'cooldown',
+            retryAt: requestStart.retryAt
+          })
           return {
             ok: false,
             reason: 'cooldown',
@@ -343,15 +359,14 @@ export function createAppStore(
           }
         }
 
-        syncStatus.value = 'error'
-        lastError.value = safeError('sync-failed')
+        transitionSync({ state: 'error', error: 'sync-failed' })
         return { ok: false, reason: 'failed' }
       }
 
-      lastSyncStartedAt.value = requestStart.startedAt
-      nextSyncAllowedAt.value =
-        requestStart.startedAt + CATALOG_REFRESH_COOLDOWN_MS
-      syncStatus.value = 'syncing'
+      transitionSync({
+        state: 'syncing',
+        startedAt: requestStart.startedAt
+      })
 
       try {
         const videos = await loadAllBaiduPages(
@@ -362,8 +377,7 @@ export function createAppStore(
 
         baiduVideos.value = snapshot.videos
         baiduCacheSavedAt.value = snapshot.savedAt
-        syncStatus.value = 'success'
-        lastError.value = null
+        transitionSync({ state: 'success' })
 
         return {
           ok: true,
@@ -372,8 +386,6 @@ export function createAppStore(
           savedAt: snapshot.savedAt
         }
       } catch (error) {
-        syncStatus.value = 'error'
-
         if (error instanceof BaiduError && error.kind === 'authorization') {
           try {
             dependencies.authRepository.clearSession()
@@ -381,11 +393,11 @@ export function createAppStore(
             // The in-memory session is still cleared below.
           }
           authSession.value = null
-          lastError.value = safeError('authorization')
+          transitionSync({ state: 'error', error: 'authorization' })
           return { ok: false, reason: 'authorization' }
         }
 
-        lastError.value = safeError('sync-failed')
+        transitionSync({ state: 'error', error: 'sync-failed' })
         return { ok: false, reason: 'failed' }
       }
     }
@@ -444,6 +456,7 @@ export function createAppStore(
       try {
         dependencies.authRepository.clearSession()
         authSession.value = null
+        transitionSync({ state: 'idle' })
       } catch {
         lastError.value = safeError('initialization')
       }
@@ -456,6 +469,7 @@ export function createAppStore(
         baiduCacheSavedAt.value = null
         lastSyncStartedAt.value = null
         nextSyncAllowedAt.value = null
+        transitionSync({ state: 'idle' })
       } catch {
         lastError.value = safeError('initialization')
       }
@@ -490,10 +504,41 @@ export function createAppStore(
         )
         .map((progress) => ({ ...progress }))
       mockBaiduErrorActive.value = data.mockBaiduError
-      syncStatus.value = data.mockBaiduError ? 'error' : 'idle'
-      lastError.value = data.mockBaiduError
-        ? safeError('sync-failed')
-        : null
+      transitionSync(
+        data.mockBaiduError
+          ? { state: 'error', error: 'sync-failed' }
+          : { state: 'idle' }
+      )
+    }
+
+    function transitionSync(transition: SyncTransition): void {
+      switch (transition.state) {
+        case 'idle':
+          syncStatus.value = 'idle'
+          lastError.value = null
+          lastSyncStartedAt.value = null
+          nextSyncAllowedAt.value = null
+          return
+        case 'syncing':
+          syncStatus.value = 'syncing'
+          lastError.value = null
+          lastSyncStartedAt.value = transition.startedAt
+          nextSyncAllowedAt.value =
+            transition.startedAt + CATALOG_REFRESH_COOLDOWN_MS
+          return
+        case 'success':
+          syncStatus.value = 'success'
+          lastError.value = null
+          return
+        case 'cooldown':
+          syncStatus.value = 'cooldown'
+          lastError.value = null
+          nextSyncAllowedAt.value = transition.retryAt
+          return
+        case 'error':
+          syncStatus.value = 'error'
+          lastError.value = safeError(transition.error)
+      }
     }
 
     return {
@@ -540,12 +585,14 @@ async function loadAllBaiduPages(
     }
 
     let addedOnPage = 0
+    let hasOverlap = false
     for (const video of pageVideos) {
-      if (
-        !video ||
-        typeof video.sourceId !== 'string' ||
-        seenSourceIds.has(video.sourceId)
-      ) {
+      if (!video || typeof video.sourceId !== 'string') {
+        continue
+      }
+
+      if (seenSourceIds.has(video.sourceId)) {
+        hasOverlap = true
         continue
       }
 
@@ -558,8 +605,8 @@ async function loadAllBaiduPages(
       return videos
     }
 
-    if (addedOnPage === 0) {
-      throw new Error('Repeated Baidu catalog page')
+    if (hasOverlap || addedOnPage === 0) {
+      throw new Error('Overlapping Baidu catalog page')
     }
   }
 

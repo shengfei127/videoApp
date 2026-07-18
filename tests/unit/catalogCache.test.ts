@@ -158,6 +158,7 @@ describe('CatalogCache cooldown', () => {
     expect(cache.beginRequest()).toEqual({ started: true, startedAt: START })
     expect(cache.load()).toBeNull()
     expect(storage.read(CATALOG_CACHE_KEY, null)).toEqual({
+      root: ROOT,
       videos: [],
       requestStartedAt: START
     })
@@ -175,6 +176,7 @@ describe('CatalogCache configured root boundary', () => {
     const storage = createMemoryStorage()
     preserveUnrelatedData(storage)
     storage.write(CATALOG_CACHE_KEY, {
+      root: ROOT,
       videos: [{ ...baiduVideo('1'), path }],
       savedAt: START
     })
@@ -196,6 +198,7 @@ describe('CatalogCache configured root boundary', () => {
       path: `${ROOT}/课程/入门/视频2.mp4`
     }
     storage.write(CATALOG_CACHE_KEY, {
+      root: ROOT,
       videos: [directRoot, nested],
       savedAt: START
     })
@@ -248,30 +251,135 @@ describe('CatalogCache configured root boundary', () => {
   })
 })
 
+describe('CatalogCache persisted root ownership', () => {
+  it('writes the exact root into successful empty and populated snapshots', () => {
+    const storage = createMemoryStorage()
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
+
+    cache.saveSuccessful([])
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toEqual({
+      root: ROOT,
+      videos: [],
+      savedAt: START
+    })
+
+    cache.saveSuccessful([baiduVideo('1')])
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toEqual({
+      root: ROOT,
+      videos: [baiduVideo('1')],
+      savedAt: START
+    })
+  })
+
+  it('writes the exact root into a request-only cooldown record', () => {
+    const storage = createMemoryStorage()
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START
+    })
+
+    expect(cache.beginRequest()).toEqual({ started: true, startedAt: START })
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toEqual({
+      root: ROOT,
+      videos: [],
+      requestStartedAt: START
+    })
+  })
+
+  it.each([
+    { videos: [], savedAt: START },
+    { videos: [], requestStartedAt: START }
+  ])('removes a rootless v1 record: %o', (stored) => {
+    const storage = createMemoryStorage()
+    preserveUnrelatedData(storage)
+    storage.write(CATALOG_CACHE_KEY, stored)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START + 1
+    })
+
+    expect(cache.load()).toBeNull()
+    expect(cache.canRefresh()).toBe(true)
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toBeNull()
+    expectUnrelatedDataPreserved(storage)
+  })
+
+  it('loads a matching-root empty successful snapshot as fresh', () => {
+    const storage = createMemoryStorage()
+    storage.write(CATALOG_CACHE_KEY, {
+      root: ROOT,
+      videos: [],
+      savedAt: START
+    })
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START + 1
+    })
+
+    expect(cache.load()).toEqual({ videos: [], savedAt: START })
+    expect(cache.isFresh(START)).toBe(true)
+  })
+
+  it.each([
+    { root: '/apps/其他', videos: [], savedAt: START },
+    { root: '/apps/其他', videos: [], requestStartedAt: START }
+  ])('removes a cross-root empty record without applying freshness or cooldown: %o', (stored) => {
+    const storage = createMemoryStorage()
+    preserveUnrelatedData(storage)
+    storage.write(CATALOG_CACHE_KEY, stored)
+    const cache = new CatalogCache(storage, {
+      root: ROOT,
+      now: () => START + 1
+    })
+
+    expect(cache.load()).toBeNull()
+    expect(cache.canRefresh()).toBe(true)
+    expect(storage.read(CATALOG_CACHE_KEY, null)).toBeNull()
+    expectUnrelatedDataPreserved(storage)
+  })
+})
+
 describe('CatalogCache untrusted storage and isolation', () => {
   it.each([
     null,
     [],
-    { videos: 'not-an-array', savedAt: START },
-    { videos: [baiduVideo('1')], savedAt: -1 },
-    { videos: [baiduVideo('1')], savedAt: START + 1 },
-    { videos: [baiduVideo('1')], savedAt: 1.5 },
-    { videos: [baiduVideo('1')], requestStartedAt: START + 1 },
-    { videos: [baiduVideo('1')], savedAt: START, requestStartedAt: -1 },
-    { videos: [baiduVideo('1')], savedAt: START, requestStartedAt: 1.5 },
+    { root: ROOT, videos: 'not-an-array', savedAt: START },
+    { root: ROOT, videos: [baiduVideo('1')], savedAt: -1 },
+    { root: ROOT, videos: [baiduVideo('1')], savedAt: START + 1 },
+    { root: ROOT, videos: [baiduVideo('1')], savedAt: 1.5 },
+    { root: ROOT, videos: [baiduVideo('1')], requestStartedAt: START + 1 },
     {
+      root: ROOT,
+      videos: [baiduVideo('1')],
+      savedAt: START,
+      requestStartedAt: -1
+    },
+    {
+      root: ROOT,
+      videos: [baiduVideo('1')],
+      savedAt: START,
+      requestStartedAt: 1.5
+    },
+    {
+      root: ROOT,
       videos: [{ ...baiduVideo('1'), sourceType: 'direct' }],
       savedAt: START
     },
     {
+      root: ROOT,
       videos: [{ ...baiduVideo('1'), sourceId: '01', id: 'baidu:01' }],
       savedAt: START
     },
     {
+      root: ROOT,
       videos: [baiduVideo('1'), baiduVideo('1')],
       savedAt: START
     },
     {
+      root: ROOT,
       videos: [{ ...baiduVideo('1'), dlink: 'https://example.test/private' }],
       savedAt: START
     }
@@ -294,6 +402,7 @@ describe('CatalogCache untrusted storage and isolation', () => {
     (now) => {
       const storage = createMemoryStorage()
       storage.write(CATALOG_CACHE_KEY, {
+        root: ROOT,
         videos: [baiduVideo('1')],
         savedAt: START
       })

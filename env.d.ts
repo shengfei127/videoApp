@@ -11,6 +11,9 @@ interface ImportMeta {
   readonly env: ImportMetaEnv
 }
 
+declare const __PIANKE_UNI_PLATFORM__: string
+declare const __PIANKE_BUILD_MODE__: string
+
 declare const plus: {
   webview: {
     create(url: string, id: string, styles: Record<string, unknown>): {

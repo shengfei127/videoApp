@@ -17,7 +17,10 @@ import {
   DIRECT_VIDEO_STORAGE_KEY,
   DirectLinkService
 } from '@/features/direct-links/directLinkService'
-import { ProgressRepository } from '@/features/playback/progressRepository'
+import {
+  PROGRESS_STORAGE_KEY,
+  ProgressRepository
+} from '@/features/playback/progressRepository'
 import { createMemoryStorage } from '@/infrastructure/storage'
 import {
   bootstrapMocks,
@@ -310,6 +313,61 @@ describe('app store Baidu synchronization', () => {
     ])
   })
 
+  it('aborts a full page with any cross-page overlap before requesting another page', async () => {
+    const context = createTestContext('sync-overlapping-page')
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('9000', NOW - 500)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    const firstPage = fullBaiduPage(1)
+    const secondPage = [
+      ...firstPage.slice(0, 999),
+      baiduVideo('1001', NOW - 1001)
+    ]
+    context.listPage
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(secondPage)
+      .mockResolvedValueOnce([])
+
+    const result = await context.store.syncBaidu(true)
+
+    expect(result).toEqual({ ok: false, reason: 'failed' })
+    expect(context.listPage).toHaveBeenCalledTimes(2)
+    expect(context.store.baiduVideos.map((video) => video.sourceId)).toEqual([
+      '9000'
+    ])
+    expect(context.cache.load()?.videos.map((video) => video.sourceId)).toEqual([
+      '9000'
+    ])
+  })
+
+  it('stops at one hundred unique full pages without issuing page 101', async () => {
+    const context = createTestContext('sync-page-bound')
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('9000', NOW - 500)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    context.listPage.mockImplementation(async (_token, page: number) => {
+      if (page > 100) {
+        throw new Error('sentinel-page-101-requested')
+      }
+      return fullBaiduPage(page)
+    })
+
+    const result = await context.store.syncBaidu(true)
+
+    expect(result).toEqual({ ok: false, reason: 'failed' })
+    expect(context.listPage).toHaveBeenCalledTimes(100)
+    expect(context.listPage).toHaveBeenLastCalledWith(
+      'private-placeholder-token',
+      100
+    )
+    expect(context.store.baiduVideos.map((video) => video.sourceId)).toEqual([
+      '9000'
+    ])
+    expect(JSON.stringify(context.store.lastError)).not.toContain('sentinel')
+  })
+
   it('clears only auth on authorization failure and keeps every local data slice', async () => {
     const context = createTestContext('sync-authorization-error')
     context.authRepository.saveSession(validSession())
@@ -336,6 +394,156 @@ describe('app store Baidu synchronization', () => {
   })
 })
 
+describe('app store sync state transitions', () => {
+  it('clears a stale error immediately for an accepted request and keeps active state stable', async () => {
+    const context = createTestContext('state-accepted-active')
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    setStaleSyncError(context)
+    const page = deferred<VideoItem[]>()
+    context.listPage.mockReturnValue(page.promise)
+
+    const activeRequest = context.store.syncBaidu(true)
+
+    expect(context.store.syncStatus).toBe('syncing')
+    expect(context.store.lastError).toBeNull()
+    expect(await context.store.syncBaidu(true)).toEqual({
+      ok: false,
+      reason: 'active'
+    })
+    expect(context.store.syncStatus).toBe('syncing')
+    expect(context.store.lastError).toBeNull()
+
+    page.resolve([])
+    await expect(activeRequest).resolves.toMatchObject({ ok: true })
+    expect(context.store.syncStatus).toBe('success')
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it('turns a fresh-cache non-refresh into defined success and clears stale sync error', async () => {
+    const context = createTestContext('state-fresh')
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    setStaleSyncError(context)
+
+    const result = await context.store.syncBaidu(false)
+
+    expect(result).toMatchObject({ ok: true, refreshed: false })
+    expect(context.store.syncStatus).toBe('success')
+    expect(context.store.lastError).toBeNull()
+    expect(context.listPage).not.toHaveBeenCalled()
+  })
+
+  it('sets cooldown state and retryAt without retaining a stale generic error', async () => {
+    const context = createTestContext('state-cooldown')
+    context.authRepository.saveSession(validSession())
+    context.listPage.mockResolvedValue([])
+    await context.store.initialize()
+    setStaleSyncError(context)
+
+    const result = await context.store.syncBaidu(true)
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'cooldown',
+      retryAt: NOW + CATALOG_REFRESH_COOLDOWN_MS
+    })
+    expect(context.store.syncStatus).toBe('cooldown')
+    expect(context.store.nextSyncAllowedAt).toBe(
+      NOW + CATALOG_REFRESH_COOLDOWN_MS
+    )
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it('returns idle with no error when no session ever existed', async () => {
+    const context = createTestContext('state-no-session')
+    setStaleSyncError(context)
+
+    expect(await context.store.syncBaidu(true)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+    expect(context.store.syncStatus).toBe('idle')
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it('treats a session that expires after initialization as authorization failure', async () => {
+    const context = createTestContext('state-expired-session')
+    context.authRepository.saveSession(validSession(NOW + 1000))
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    context.advance(1000)
+    setStaleSyncError(context)
+
+    expect(await context.store.syncBaidu(true)).toEqual({
+      ok: false,
+      reason: 'authorization'
+    })
+    expect(context.store.authSession).toBeNull()
+    expect(context.store.syncStatus).toBe('error')
+    expect(context.store.lastError).toMatchObject({ code: 'authorization' })
+  })
+
+  it('makes mock success clear stale state while mock error remains explicit', async () => {
+    const success = createTestContext('state-mock-success', {
+      config: { ...CONFIG, useMocks: true },
+      bootstrapMocks,
+      mockScenario: 'resume',
+      mockEnvironment: H5_DEVELOPMENT
+    })
+    await success.store.initialize()
+    setStaleSyncError(success)
+
+    expect(await success.store.syncBaidu(true)).toMatchObject({
+      ok: true,
+      refreshed: false
+    })
+    expect(success.store.syncStatus).toBe('success')
+    expect(success.store.lastError).toBeNull()
+
+    const failure = createTestContext('state-mock-failure', {
+      config: { ...CONFIG, useMocks: true },
+      bootstrapMocks,
+      mockScenario: 'baidu-error',
+      mockEnvironment: H5_DEVELOPMENT
+    })
+    await failure.store.initialize()
+
+    expect(await failure.store.syncBaidu(true)).toEqual({
+      ok: false,
+      reason: 'failed'
+    })
+    expect(failure.store.syncStatus).toBe('error')
+    expect(failure.store.lastError).toMatchObject({ code: 'sync-failed' })
+  })
+
+  it('resets stale sync state after disconnect or catalog clear', async () => {
+    const disconnected = createTestContext('state-disconnect')
+    disconnected.authRepository.saveSession(validSession())
+    disconnected.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await disconnected.store.initialize()
+    setStaleSyncError(disconnected)
+
+    disconnected.store.disconnectBaidu()
+
+    expect(disconnected.store.syncStatus).toBe('idle')
+    expect(disconnected.store.lastError).toBeNull()
+
+    const cleared = createTestContext('state-cache-clear')
+    cleared.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await cleared.store.initialize()
+    setStaleSyncError(cleared)
+
+    cleared.store.clearCatalogCache()
+
+    expect(cleared.store.syncStatus).toBe('idle')
+    expect(cleared.store.lastError).toBeNull()
+  })
+})
+
 describe('app store derived catalog', () => {
   it('never exposes a tampered cached video outside the configured Baidu root', async () => {
     const context = createTestContext('getters-tampered-cache')
@@ -344,6 +552,7 @@ describe('app store derived catalog', () => {
       path: '/apps/其他/泄漏.mp4'
     }
     context.storage.write(CATALOG_CACHE_KEY, {
+      root: CONFIG.baiduRoot,
       videos: [outside],
       savedAt: NOW
     })
@@ -584,6 +793,63 @@ describe('app store local reload and clear actions', () => {
 })
 
 describe('mock catalog bootstrap', () => {
+  it('bootstraps an allowed mock before reading or mutating any real local data', async () => {
+    const context = createMockIsolationContext(
+      'mock-first-success',
+      bootstrapMocks
+    )
+
+    await context.store.initialize()
+
+    expect(context.bootstrap).toHaveBeenCalledOnce()
+    expect(context.now).not.toHaveBeenCalled()
+    expect(context.getValidSession).not.toHaveBeenCalled()
+    expect(context.listDirect).not.toHaveBeenCalled()
+    expect(context.listHistory).not.toHaveBeenCalled()
+    expect(context.listResumable).not.toHaveBeenCalled()
+    expect(context.loadCache).not.toHaveBeenCalled()
+    expect(context.readStorage).not.toHaveBeenCalled()
+    expect(context.writeStorage).not.toHaveBeenCalled()
+    expect(context.removeStorage).not.toHaveBeenCalled()
+    expect(context.listPage).not.toHaveBeenCalled()
+    expect(context.store.baiduVideos).toHaveLength(3)
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it.each(['null', 'throw'] as const)(
+    'fails safely when mock bootstrap returns %s without falling through to local data',
+    async (failure) => {
+      const bootstrap = vi.fn(() => {
+        if (failure === 'throw') {
+          throw new Error('sentinel-mock-bootstrap-failure')
+        }
+        return null
+      })
+      const context = createMockIsolationContext(
+        `mock-first-${failure}`,
+        bootstrap
+      )
+
+      await expect(context.store.initialize()).resolves.toBeUndefined()
+
+      expect(context.now).not.toHaveBeenCalled()
+      expect(context.getValidSession).not.toHaveBeenCalled()
+      expect(context.listDirect).not.toHaveBeenCalled()
+      expect(context.listHistory).not.toHaveBeenCalled()
+      expect(context.listResumable).not.toHaveBeenCalled()
+      expect(context.loadCache).not.toHaveBeenCalled()
+      expect(context.readStorage).not.toHaveBeenCalled()
+      expect(context.writeStorage).not.toHaveBeenCalled()
+      expect(context.removeStorage).not.toHaveBeenCalled()
+      expect(context.listPage).not.toHaveBeenCalled()
+      expect(context.store.baiduVideos).toEqual([])
+      expect(context.store.directRecords).toEqual([])
+      expect(context.store.progressHistory).toEqual([])
+      expect(context.store.lastError).toMatchObject({ code: 'initialization' })
+      expect(JSON.stringify(context.store.lastError)).not.toContain('sentinel')
+    }
+  )
+
   it('returns null without inspecting options when mocks are disabled', () => {
     const options = Object.defineProperty({}, 'scenario', {
       get: () => {
@@ -847,6 +1113,67 @@ interface TestContext {
   store: ReturnType<ReturnType<typeof createAppStore>>
 }
 
+function createMockIsolationContext(
+  storeId: string,
+  bootstrapper: NonNullable<AppStoreDependencies['bootstrapMocks']>
+) {
+  const storage = createMemoryStorage()
+  storage.write(AUTH_STORAGE_KEY, validSession(NOW))
+  storage.write(DIRECT_VIDEO_STORAGE_KEY, { malformed: 'direct-records' })
+  storage.write(PROGRESS_STORAGE_KEY, { malformed: 'progress-records' })
+  storage.write(CATALOG_CACHE_KEY, {
+    root: '/apps/其他',
+    videos: [],
+    savedAt: NOW
+  })
+
+  const authRepository = new AuthRepository(storage)
+  const directLinkService = new DirectLinkService(storage)
+  const progressRepository = new ProgressRepository(storage)
+  const catalogCache = new CatalogCache(storage, {
+    root: CONFIG.baiduRoot,
+    now: () => NOW
+  })
+  const getValidSession = vi.spyOn(authRepository, 'getValidSession')
+  const listDirect = vi.spyOn(directLinkService, 'list')
+  const listHistory = vi.spyOn(progressRepository, 'listHistory')
+  const listResumable = vi.spyOn(progressRepository, 'listResumable')
+  const loadCache = vi.spyOn(catalogCache, 'load')
+  const readStorage = vi.spyOn(storage, 'read')
+  const writeStorage = vi.spyOn(storage, 'write')
+  const removeStorage = vi.spyOn(storage, 'remove')
+  const now = vi.fn(() => NOW)
+  const listPage = vi.fn().mockResolvedValue([])
+  const bootstrap = vi.fn(bootstrapper)
+  const useStore = createAppStore(`test:${storeId}`, {
+    authRepository,
+    directLinkService,
+    progressRepository,
+    catalogCache,
+    baiduDriveSource: { listPage },
+    config: { ...CONFIG, useMocks: true },
+    now,
+    bootstrapMocks: bootstrap,
+    mockScenario: 'resume',
+    mockEnvironment: H5_DEVELOPMENT
+  })
+
+  return {
+    store: useStore(createPinia()),
+    bootstrap,
+    now,
+    getValidSession,
+    listDirect,
+    listHistory,
+    listResumable,
+    loadCache,
+    readStorage,
+    writeStorage,
+    removeStorage,
+    listPage
+  }
+}
+
 function createTestContext(
   storeId: string,
   overrides: Partial<AppStoreDependencies> = {}
@@ -890,6 +1217,14 @@ function createTestContext(
   }
 }
 
+function setStaleSyncError(context: TestContext): void {
+  context.store.syncStatus = 'error'
+  context.store.lastError = {
+    code: 'sync-failed',
+    message: 'stale sync error'
+  }
+}
+
 function validSession(expiresAt = NOW + 24 * 60 * 60 * 1000) {
   return {
     accessToken: 'private-placeholder-token',
@@ -907,6 +1242,13 @@ function baiduVideo(sourceId: string, modifiedAt: number): VideoItem {
     path: `${CONFIG.baiduRoot}/视频${sourceId}.mp4`,
     modifiedAt
   }
+}
+
+function fullBaiduPage(page: number): VideoItem[] {
+  const firstSourceId = (page - 1) * 1000 + 1
+  return Array.from({ length: 1000 }, (_, index) =>
+    baiduVideo(String(firstSourceId + index), NOW - index)
+  )
 }
 
 function directRecord(
