@@ -57,7 +57,7 @@ function toSafeThumbnailUrl(value: string | undefined): string | undefined {
       :aria-label="`${label}的缩略图`"
       role="img"
       mode="aspectFill"
-      lazy
+      :lazy-load="true"
       @error="handleImageError"
     />
     <view

@@ -13,7 +13,7 @@ describe('VideoThumbnail', () => {
     const image = wrapper.get('[data-testid="video-thumbnail-image"]')
     expect(image.attributes('src')).toBe(src)
     expect(image.attributes('mode')).toBe('aspectFill')
-    expect(image.attributes()).toHaveProperty('lazy')
+    expect(image.attributes('lazy-load')).toBe('true')
     expect(wrapper.find('[data-testid="video-thumbnail-fallback"]').exists()).toBe(false)
 
     await image.trigger('error')
