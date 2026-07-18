@@ -59,7 +59,7 @@ interface UniRequestOptions {
   readonly data: Readonly<Record<string, unknown>>
   readonly header: Readonly<{ 'User-Agent': 'pan.baidu.com' }>
   readonly timeout: 15_000
-  readonly dataType: 'json'
+  readonly dataType: 'text'
   readonly success: (response: UniSuccessResponse) => void
   readonly fail: (failure: UniFailureResponse) => void
 }
@@ -163,7 +163,7 @@ export function requestBaiduJson(
         data: input.data,
         header: { 'User-Agent': 'pan.baidu.com' },
         timeout: 15_000,
-        dataType: 'json',
+        dataType: 'text',
         success,
         fail
       })
@@ -189,8 +189,247 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseJson(value: unknown): unknown {
   if (typeof value !== 'string') {
-    return value
+    throw new Error('Invalid Baidu response')
   }
 
-  return JSON.parse(value) as unknown
+  return JSON.parse(rewriteFsIdValues(value)) as unknown
+}
+
+const UINT64_MAX = '18446744073709551615'
+
+function rewriteFsIdValues(source: string): string {
+  return new FsIdJsonRewriter(source).rewrite()
+}
+
+class FsIdJsonRewriter {
+  private index = 0
+  private readonly output: string[] = []
+
+  constructor(private readonly source: string) {}
+
+  rewrite(): string {
+    this.copyWhitespace()
+    this.rewriteValue(false)
+    this.copyWhitespace()
+    if (this.index !== this.source.length) {
+      this.fail()
+    }
+
+    return this.output.join('')
+  }
+
+  private rewriteValue(isFsId: boolean): void {
+    this.copyWhitespace()
+    if (this.index >= this.source.length) {
+      this.fail()
+    }
+
+    if (isFsId) {
+      this.rewriteFsIdValue()
+      return
+    }
+
+    switch (this.source[this.index]) {
+      case '{':
+        this.rewriteObject()
+        return
+      case '[':
+        this.rewriteArray()
+        return
+      case '"':
+        this.output.push(this.readStringToken())
+        return
+      default:
+        this.copyPrimitive()
+    }
+  }
+
+  private rewriteObject(): void {
+    this.copyCharacter('{')
+    this.copyWhitespace()
+    if (this.source[this.index] === '}') {
+      this.copyCharacter('}')
+      return
+    }
+
+    while (this.index < this.source.length) {
+      if (this.source[this.index] !== '"') {
+        this.fail()
+      }
+
+      const keyToken = this.readStringToken()
+      this.output.push(keyToken)
+      const key = JSON.parse(keyToken) as unknown
+      if (typeof key !== 'string') {
+        this.fail()
+      }
+
+      this.copyWhitespace()
+      this.copyCharacter(':')
+      this.rewriteValue(key === 'fs_id')
+      this.copyWhitespace()
+
+      const delimiter = this.source[this.index]
+      if (delimiter === '}') {
+        this.copyCharacter('}')
+        return
+      }
+      if (delimiter !== ',') {
+        this.fail()
+      }
+
+      this.copyCharacter(',')
+      this.copyWhitespace()
+    }
+
+    this.fail()
+  }
+
+  private rewriteArray(): void {
+    this.copyCharacter('[')
+    this.copyWhitespace()
+    if (this.source[this.index] === ']') {
+      this.copyCharacter(']')
+      return
+    }
+
+    while (this.index < this.source.length) {
+      this.rewriteValue(false)
+      this.copyWhitespace()
+
+      const delimiter = this.source[this.index]
+      if (delimiter === ']') {
+        this.copyCharacter(']')
+        return
+      }
+      if (delimiter !== ',') {
+        this.fail()
+      }
+
+      this.copyCharacter(',')
+      this.copyWhitespace()
+    }
+
+    this.fail()
+  }
+
+  private rewriteFsIdValue(): void {
+    let value: string
+    if (this.source[this.index] === '"') {
+      const token = this.readStringToken()
+      const decoded = JSON.parse(token) as unknown
+      if (typeof decoded !== 'string') {
+        this.fail()
+      }
+      value = decoded
+    } else {
+      value = this.readPrimitiveToken()
+    }
+
+    if (!isCanonicalUint64(value)) {
+      this.fail()
+    }
+
+    this.output.push(JSON.stringify(value))
+  }
+
+  private copyPrimitive(): void {
+    this.output.push(this.readPrimitiveToken())
+  }
+
+  private readPrimitiveToken(): string {
+    const start = this.index
+    while (this.index < this.source.length) {
+      const character = this.source[this.index]
+      if (
+        isJsonWhitespace(character) ||
+        character === ',' ||
+        character === ']' ||
+        character === '}'
+      ) {
+        break
+      }
+      this.index += 1
+    }
+
+    if (this.index === start) {
+      this.fail()
+    }
+    return this.source.slice(start, this.index)
+  }
+
+  private readStringToken(): string {
+    const start = this.index
+    this.index += 1
+
+    while (this.index < this.source.length) {
+      const character = this.source[this.index]
+      if (character === '"') {
+        this.index += 1
+        return this.source.slice(start, this.index)
+      }
+
+      if (character === '\\') {
+        const escape = this.source[this.index + 1]
+        if (escape === 'u') {
+          const unicodeEscape = this.source.slice(
+            this.index + 2,
+            this.index + 6
+          )
+          if (!/^[0-9A-F]{4}$/iu.test(unicodeEscape)) {
+            this.fail()
+          }
+          this.index += 6
+          continue
+        }
+        if (!escape || !/["\\/bfnrt]/u.test(escape)) {
+          this.fail()
+        }
+        this.index += 2
+        continue
+      }
+
+      if (character.charCodeAt(0) < 0x20) {
+        this.fail()
+      }
+      this.index += 1
+    }
+
+    this.fail()
+  }
+
+  private copyWhitespace(): void {
+    const start = this.index
+    while (
+      this.index < this.source.length &&
+      isJsonWhitespace(this.source[this.index])
+    ) {
+      this.index += 1
+    }
+    this.output.push(this.source.slice(start, this.index))
+  }
+
+  private copyCharacter(expected: string): void {
+    if (this.source[this.index] !== expected) {
+      this.fail()
+    }
+    this.output.push(expected)
+    this.index += 1
+  }
+
+  private fail(): never {
+    throw new Error('Invalid Baidu response')
+  }
+}
+
+function isJsonWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\t' || value === '\n' || value === '\r'
+}
+
+function isCanonicalUint64(value: string): boolean {
+  return (
+    /^[1-9]\d*$/u.test(value) &&
+    (value.length < UINT64_MAX.length ||
+      (value.length === UINT64_MAX.length && value <= UINT64_MAX))
+  )
 }

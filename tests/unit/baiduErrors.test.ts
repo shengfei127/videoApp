@@ -7,6 +7,7 @@ import {
   toBaiduHttpError,
   toBaiduNetworkError
 } from '@/features/baidu/baiduErrors'
+import { BaiduDriveSource } from '@/features/baidu/baiduDriveSource'
 import {
   BAIDU_FILE_ENDPOINT,
   BAIDU_MULTIMEDIA_ENDPOINT,
@@ -146,7 +147,7 @@ describe('Baidu uni.request transport', () => {
     })
     requestOptions(request).success({
       statusCode: 200,
-      data: { errno: 0, list: [] }
+      data: '{"errno":0,"list":[]}'
     })
     await expect(pending).resolves.toEqual({ errno: 0, list: [] })
   })
@@ -170,14 +171,14 @@ describe('Baidu uni.request transport', () => {
       data,
       header: { 'User-Agent': 'pan.baidu.com' },
       timeout: 15_000,
-      dataType: 'json',
+      dataType: 'text',
       success: expect.any(Function),
       fail: expect.any(Function)
     })
 
     requestOptions(request).success({
       statusCode: 200,
-      data: { errno: 0, info: [] }
+      data: '{"errno":0,"info":[]}'
     })
     await expect(pending).resolves.toEqual({ errno: 0, info: [] })
   })
@@ -198,6 +199,112 @@ describe('Baidu uni.request transport', () => {
     })
 
     await expect(pending).resolves.toEqual({ errno: 0, info: [] })
+  })
+
+  it('preserves nested fs_id integers without rewriting JSON string content', async () => {
+    const request = vi.fn()
+    const pending = requestBaiduJson(
+      {
+        endpoint: BAIDU_FILE_ENDPOINT,
+        data: { method: 'videolist' }
+      },
+      request
+    )
+    const raw = String.raw`{
+      "errno": 0,
+      "nested": [
+        { "fs_id" : 7 },
+        { "fs\u005fid": 9007199254740993 },
+        [ { "fs_id": 18446744073709551615 } ]
+      ],
+      "literal": "{\"fs_id\":18446744073709551615}"
+    }`
+
+    requestOptions(request).success({ statusCode: 200, data: raw })
+
+    await expect(pending).resolves.toEqual({
+      errno: 0,
+      nested: [
+        { fs_id: '7' },
+        { fs_id: '9007199254740993' },
+        [{ fs_id: '18446744073709551615' }]
+      ],
+      literal: '{"fs_id":18446744073709551615}'
+    })
+  })
+
+  it.each([
+    '{"errno":0,"info":[{"fs_id":0}]}',
+    '{"errno":0,"info":[{"fs_id":-1}]}',
+    '{"errno":0,"info":[{"fs_id":1.5}]}',
+    '{"errno":0,"info":[{"fs_id":1e3}]}',
+    '{"errno":0,"info":[{"fs_id":18446744073709551616}]}',
+    '{"errno":0,"info":[{"fs_id":"01"}]}',
+    '{"errno":0,"info":[{"fs_id":null}]}',
+    '{"errno":0,"info":[{"fs_id":1}'
+  ])('fails closed for unsafe or malformed lossless JSON: %s', async (raw) => {
+    const request = vi.fn()
+    const pending = requestBaiduJson(
+      {
+        endpoint: BAIDU_FILE_ENDPOINT,
+        data: { method: 'videolist' }
+      },
+      request
+    )
+
+    requestOptions(request).success({ statusCode: 200, data: raw })
+
+    const error = await captureRejection(pending)
+    expect(error).toMatchObject({
+      kind: 'response',
+      code: 'INVALID_RESPONSE',
+      diagnostics: {}
+    })
+    expect(JSON.stringify(error)).not.toContain(raw)
+  })
+
+  it('maps raw videolist uint64 fs_id values without precision loss', async () => {
+    const request = vi.fn()
+    const source = new BaiduDriveSource(
+      '/apps/片刻',
+      createBaiduTransport(request)
+    )
+    const pending = source.listPage('token', 1)
+    const raw = `{"errno":0,"info":[${rawVideoRecord(
+      '9007199254740993',
+      'large.mp4'
+    )},${rawVideoRecord('18446744073709551615', 'max.mp4')}]}`
+
+    requestOptions(request).success({ statusCode: 200, data: raw })
+
+    await expect(pending).resolves.toMatchObject([
+      { id: 'baidu:9007199254740993', sourceId: '9007199254740993' },
+      {
+        id: 'baidu:18446744073709551615',
+        sourceId: '18446744073709551615'
+      }
+    ])
+  })
+
+  it('matches a raw filemetas uint64 fs_id without precision loss', async () => {
+    const request = vi.fn()
+    const source = new BaiduDriveSource(
+      '/apps/片刻',
+      createBaiduTransport(request)
+    )
+    const pending = source.resolvePlaybackUrl(
+      'current-token',
+      '18446744073709551615'
+    )
+    const raw =
+      '{"errno":0,"list":[{"fs_id":18446744073709551615,"path":"/apps/片刻/max.mp4","dlink":"https://d.pcs.baidu.com/file/max"}]}'
+
+    requestOptions(request).success({ statusCode: 200, data: raw })
+
+    const result = await pending
+    expect(new URL(result).searchParams.get('access_token')).toBe(
+      'current-token'
+    )
   })
 
   it('rejects HTTP 403 with status-only diagnostics and no response body', async () => {
@@ -279,7 +386,7 @@ describe('Baidu uni.request transport', () => {
 
   it('settles only once when a request adapter fires multiple callbacks', async () => {
     const request = vi.fn((options: TestRequestOptions) => {
-      options.success({ statusCode: 200, data: { errno: 0 } })
+      options.success({ statusCode: 200, data: '{"errno":0}' })
       options.fail({ errMsg: 'request:fail sentinel-late-secret' })
       options.success({
         statusCode: 500,
@@ -338,4 +445,8 @@ async function captureRejection(promise: Promise<unknown>): Promise<BaiduError> 
   }
 
   throw new Error('Expected promise to reject')
+}
+
+function rawVideoRecord(fsId: string, name: string): string {
+  return `{"fs_id":${fsId},"server_filename":"${name}","path":"/apps/片刻/${name}","isdir":0,"category":1,"size":1,"server_mtime":1595921251,"duration":1}`
 }

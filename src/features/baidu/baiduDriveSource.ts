@@ -12,6 +12,8 @@ import {
 
 const SAFE_APP_ROOT = /^\/apps\/[\p{L}\p{N} _-]{1,20}$/u
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/u
+const BAIDU_DLINK_HOST = 'd.pcs.baidu.com'
+const UINT64_MAX = '18446744073709551615'
 
 export class BaiduDriveSource {
   private readonly root: string
@@ -52,7 +54,7 @@ export class BaiduDriveSource {
         page
       })
       const info = readProviderArray(response, 'info')
-      const seen = new Set<number>()
+      const seen = new Set<string>()
       const videos: VideoItem[] = []
 
       for (const entry of info) {
@@ -61,7 +63,7 @@ export class BaiduDriveSource {
           continue
         }
 
-        const fsId = Number(video.sourceId)
+        const fsId = video.sourceId
         if (seen.has(fsId)) {
           continue
         }
@@ -93,7 +95,7 @@ export class BaiduDriveSource {
       const response = await this.transport({
         method: 'filemetas',
         access_token: accessToken,
-        fsids: JSON.stringify([normalizedFsId]),
+        fsids: `[${normalizedFsId}]`,
         dlink: 1,
         thumb: 1,
         needmedia: 1
@@ -139,22 +141,22 @@ function readProviderArray(response: unknown, key: 'info' | 'list'): unknown[] {
   return value
 }
 
-function normalizeFsId(value: unknown): number | undefined {
+function normalizeFsId(value: unknown): string | undefined {
   if (
     typeof value === 'number' &&
     Number.isSafeInteger(value) &&
     value > 0
   ) {
-    return value
+    return String(value)
   }
 
   if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) {
     return undefined
   }
 
-  const parsed = Number(value)
-  return Number.isSafeInteger(parsed) && String(parsed) === value
-    ? parsed
+  return value.length < UINT64_MAX.length ||
+    (value.length === UINT64_MAX.length && value <= UINT64_MAX)
+    ? value
     : undefined
 }
 
@@ -171,7 +173,9 @@ function addAccessToken(dlink: string, accessToken: string): string {
   }
 
   if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.protocol !== 'https:' ||
+    url.hostname !== BAIDU_DLINK_HOST ||
+    url.port ||
     url.username ||
     url.password ||
     url.hash
@@ -201,11 +205,7 @@ function mapVideoRecord(value: unknown, root: string): VideoItem | undefined {
   const name = readName(value.server_filename, value.name)
   const path = typeof value.path === 'string' ? value.path : undefined
   const size = readOptionalNumber(value, 'size', isSafeIntegerMetadata)
-  const modifiedAt = readOptionalNumber(
-    value,
-    'server_mtime',
-    isSafeIntegerMetadata
-  )
+  const modifiedAt = readOptionalUnixTimestamp(value, 'server_mtime')
   const duration = readOptionalNumber(value, 'duration', isSafeNumberMetadata)
 
   if (
@@ -241,10 +241,8 @@ function mapVideoRecord(value: unknown, root: string): VideoItem | undefined {
   }
 }
 
-function readFsId(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && typeof value === 'number' && value > 0
-    ? value
-    : undefined
+function readFsId(value: unknown): string | undefined {
+  return normalizeFsId(value)
 }
 
 function readName(...values: unknown[]): string | undefined {
@@ -306,6 +304,29 @@ function readOptionalNumber(
   const value = record[key]
   return typeof value === 'number' && validate(value)
     ? { value, invalid: false }
+    : { invalid: true }
+}
+
+function readOptionalUnixTimestamp(
+  record: Record<string, unknown>,
+  key: string
+): OptionalNumber {
+  if (!(key in record)) {
+    return { invalid: false }
+  }
+
+  const seconds = record[key]
+  if (
+    typeof seconds !== 'number' ||
+    !Number.isSafeInteger(seconds) ||
+    seconds < 0
+  ) {
+    return { invalid: true }
+  }
+
+  const milliseconds = seconds * 1000
+  return Number.isSafeInteger(milliseconds)
+    ? { value: milliseconds, invalid: false }
     : { invalid: true }
 }
 

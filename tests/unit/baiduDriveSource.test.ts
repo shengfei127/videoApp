@@ -69,12 +69,52 @@ describe('BaiduDriveSource videolist', () => {
         name: 'feature.mp4',
         path: '/apps/片刻/feature.mp4',
         sizeBytes: 9_876_543,
-        modifiedAt: 1_711_111_111,
+        modifiedAt: 1_711_111_111_000,
         durationSeconds: 123.5,
         thumbnailUrl: 'https://thumb.example/large.jpg?quality=90'
       }
     ])
     expect(JSON.stringify(videos)).not.toContain('sentinel-thumb-token')
+  })
+
+  it('converts documented server_mtime seconds to milliseconds and keeps duration in seconds', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      errno: 0,
+      info: [
+        {
+          ...videoRecord(44, '/apps/片刻/timestamp.mp4'),
+          server_mtime: 1_595_921_251,
+          duration: 3_601.5
+        }
+      ]
+    })
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    const videos = await source.listPage('token', 1)
+
+    expect(videos[0]).toMatchObject({
+      modifiedAt: 1_595_921_251_000,
+      durationSeconds: 3_601.5
+    })
+  })
+
+  it.each([
+    -1,
+    1.5,
+    Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1
+  ])('discards a record with unsafe server_mtime seconds: %s', async (serverMtime) => {
+    const transport = vi.fn().mockResolvedValue({
+      errno: 0,
+      info: [
+        {
+          ...videoRecord(45, '/apps/片刻/unsafe-time.mp4'),
+          server_mtime: serverMtime
+        }
+      ]
+    })
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    await expect(source.listPage('token', 1)).resolves.toEqual([])
   })
 
   it.each([
@@ -161,6 +201,32 @@ describe('BaiduDriveSource videolist', () => {
     const videos = await source.listPage('token', 1)
 
     expect(videos.map((video) => video.id)).toEqual(['baidu:1'])
+  })
+
+  it('preserves canonical uint64 fs_id strings and deduplicates as strings', async () => {
+    const aboveSafeInteger = '9007199254740992'
+    const uint64Max = '18446744073709551615'
+    const transport = vi.fn().mockResolvedValue({
+      errno: 0,
+      info: [
+        videoRecord(aboveSafeInteger, '/apps/片刻/large.mp4'),
+        videoRecord(aboveSafeInteger, '/apps/片刻/duplicate.mp4'),
+        videoRecord(uint64Max, '/apps/片刻/max.mp4'),
+        videoRecord('18446744073709551616', '/apps/片刻/overflow.mp4')
+      ]
+    })
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    const videos = await source.listPage('token', 1)
+
+    expect(videos.map((video) => video.id)).toEqual([
+      `baidu:${aboveSafeInteger}`,
+      `baidu:${uint64Max}`
+    ])
+    expect(videos.map((video) => video.sourceId)).toEqual([
+      aboveSafeInteger,
+      uint64Max
+    ])
   })
 
   it.each(unsafeEncodedProviderPaths)(
@@ -377,6 +443,82 @@ describe('BaiduDriveSource filemetas playback', () => {
     expect(JSON.stringify(source)).not.toContain('d.pcs.baidu.com')
   })
 
+  it.each([
+    'http://d.pcs.baidu.com/file/insecure',
+    'https://downloads.example.test/file/foreign',
+    'https://d.pcs.baidu.com.evil.example/file/suffix-lookalike',
+    'https://evil-d.pcs.baidu.com/file/prefix-lookalike',
+    'https://d.pcs.baidu.com./file/trailing-dot',
+    'https://127.0.0.1/file/ip-literal',
+    'https://[::1]/file/ipv6-literal',
+    'https://localhost/file/localhost',
+    'https://sentinel-user:sentinel-password@d.pcs.baidu.com/file/userinfo',
+    'https://d.pcs.baidu.com:444/file/non-default-port',
+    'https://d.pcs.baidu.com/file/fragment#sentinel-fragment'
+  ])('rejects a non-official dlink before adding the token: %s', async (dlink) => {
+    const sentinelToken = 'sentinel-current-token-DO-NOT-LEAK'
+    const transport = vi.fn().mockResolvedValue({
+      errno: 0,
+      list: [
+        {
+          fs_id: 7,
+          path: '/apps/片刻/movie.mp4',
+          dlink
+        }
+      ]
+    })
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    const error = await captureSourceRejection(
+      source.resolvePlaybackUrl(sentinelToken, 7)
+    )
+    const serialized = [
+      error.message,
+      String(error),
+      JSON.stringify(error),
+      JSON.stringify(error.diagnostics)
+    ].join('\n')
+
+    expect(error).toMatchObject({
+      kind: 'response',
+      code: 'INVALID_RESPONSE',
+      diagnostics: {}
+    })
+    expect(serialized).not.toContain(sentinelToken)
+    expect(serialized).not.toContain(dlink)
+  })
+
+  it('preserves an official dlink signature and replaces token variants exactly once', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      errno: 0,
+      list: [
+        {
+          fs_id: 7,
+          path: '/apps/片刻/movie.mp4',
+          dlink:
+            'https://d.pcs.baidu.com:443/file/official?sign=a%2Bb&timestamp=123&Access_Token=stale-one&access_token=stale-two'
+        }
+      ]
+    })
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    const result = await source.resolvePlaybackUrl('current-token', 7)
+    const url = new URL(result)
+    const tokenKeys = Array.from(url.searchParams.keys()).filter(
+      (key) => key.toLowerCase() === 'access_token'
+    )
+
+    expect(url.protocol).toBe('https:')
+    expect(url.hostname).toBe('d.pcs.baidu.com')
+    expect(url.port).toBe('')
+    expect(url.searchParams.get('sign')).toBe('a+b')
+    expect(url.searchParams.get('timestamp')).toBe('123')
+    expect(tokenKeys).toEqual(['access_token'])
+    expect(url.searchParams.get('access_token')).toBe('current-token')
+    expect(result).not.toContain('stale-one')
+    expect(result).not.toContain('stale-two')
+  })
+
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN])(
     'rejects invalid fs_id %s before transport',
     async (fsId) => {
@@ -433,6 +575,54 @@ describe('BaiduDriveSource filemetas playback', () => {
     const url = new URL(result)
     expect(url.protocol).toBe('https:')
     expect(url.searchParams.get('access_token')).toBe(accessToken)
+  })
+
+  it.each(['9007199254740992', '18446744073709551615'])(
+    'requests and matches the lossless uint64 fs_id %s',
+    async (fsId) => {
+      const transport = vi.fn().mockResolvedValue({
+        errno: 0,
+        list: [
+          {
+            fs_id: fsId,
+            path: '/apps/片刻/large.mp4',
+            dlink: 'https://d.pcs.baidu.com/file/large'
+          }
+        ]
+      })
+      const source = new BaiduDriveSource('/apps/片刻', transport)
+
+      const result = await source.resolvePlaybackUrl('token', fsId)
+
+      expect(transport).toHaveBeenCalledWith({
+        method: 'filemetas',
+        access_token: 'token',
+        fsids: `[${fsId}]`,
+        dlink: 1,
+        thumb: 1,
+        needmedia: 1
+      })
+      expect(new URL(result).searchParams.get('access_token')).toBe('token')
+    }
+  )
+
+  it.each([
+    '0',
+    '-1',
+    '+1',
+    '01',
+    '1.0',
+    '1e3',
+    ' 1',
+    '1 ',
+    '18446744073709551616',
+    '99999999999999999999999999999999999999'
+  ])('rejects a non-canonical or out-of-range fs_id string: %s', async (fsId) => {
+    const transport = vi.fn()
+    const source = new BaiduDriveSource('/apps/片刻', transport)
+
+    await expect(source.resolvePlaybackUrl('token', fsId)).rejects.toThrow()
+    expect(transport).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -615,7 +805,7 @@ describe('BaiduDriveSource filemetas playback', () => {
   })
 })
 
-function videoRecord(fsId: number, path: string) {
+function videoRecord(fsId: number | string, path: string) {
   return {
     fs_id: fsId,
     server_filename: path.slice(path.lastIndexOf('/') + 1),
