@@ -67,7 +67,15 @@ export type SyncBaiduResult =
       count: number
       savedAt: number | null
     }
-  | { ok: false; reason: 'no-session' | 'active' | 'failed' | 'authorization' }
+  | {
+      ok: false
+      reason:
+        | 'no-session'
+        | 'active'
+        | 'failed'
+        | 'authorization'
+        | 'superseded'
+    }
   | { ok: false; reason: 'cooldown'; retryAt: number }
 
 type SyncTransition =
@@ -186,6 +194,7 @@ export function createAppStore(
       buildFolderTree(dependencies.config.baiduRoot, baiduVideos.value)
     )
     let initializationPromise: Promise<void> | null = null
+    let syncGeneration = 0
 
     function initialize(): Promise<void> {
       if (initialized.value) {
@@ -374,6 +383,8 @@ export function createAppStore(
         return { ok: false, reason: 'failed' }
       }
 
+      const generation = syncGeneration
+      const accessToken = session.accessToken
       transitionSync({
         state: 'syncing',
         startedAt: requestStart.startedAt
@@ -382,8 +393,12 @@ export function createAppStore(
       try {
         const videos = await loadAllBaiduPages(
           dependencies.baiduDriveSource,
-          session.accessToken
+          accessToken
         )
+        if (!isCurrentSync(generation, accessToken)) {
+          return { ok: false, reason: 'superseded' }
+        }
+
         const snapshot = dependencies.catalogCache.saveSuccessful(videos)
 
         baiduVideos.value = snapshot.videos
@@ -397,6 +412,10 @@ export function createAppStore(
           savedAt: snapshot.savedAt
         }
       } catch (error) {
+        if (!isCurrentSync(generation, accessToken)) {
+          return { ok: false, reason: 'superseded' }
+        }
+
         if (error instanceof BaiduError && error.kind === 'authorization') {
           try {
             dependencies.authRepository.clearSession()
@@ -418,14 +437,23 @@ export function createAppStore(
         const now = dependencies.now()
         const session = dependencies.authRepository.getValidSession(now)
         if (!session || !isValidSessionAt(session, now)) {
+          const identityChanged = authSession.value !== null
           authSession.value = null
+          if (identityChanged) {
+            invalidateSync()
+          }
           if (session) {
             dependencies.authRepository.clearSession()
           }
           return null
         }
 
+        const identityChanged =
+          authSession.value?.accessToken !== session.accessToken
         authSession.value = cloneSession(session)
+        if (identityChanged) {
+          invalidateSync()
+        }
         return cloneSession(session)
       } catch {
         lastError.value = safeError('initialization')
@@ -467,7 +495,7 @@ export function createAppStore(
       try {
         dependencies.authRepository.clearSession()
         authSession.value = null
-        transitionSync({ state: 'idle' })
+        invalidateSync()
         return true
       } catch {
         lastError.value = safeError('initialization')
@@ -482,7 +510,7 @@ export function createAppStore(
         baiduCacheSavedAt.value = null
         lastSyncStartedAt.value = null
         nextSyncAllowedAt.value = null
-        transitionSync({ state: 'idle' })
+        invalidateSync()
         return true
       } catch {
         lastError.value = safeError('initialization')
@@ -556,6 +584,18 @@ export function createAppStore(
           syncStatus.value = 'error'
           lastError.value = safeError(transition.error)
       }
+    }
+
+    function invalidateSync(): void {
+      syncGeneration += 1
+      transitionSync({ state: 'idle' })
+    }
+
+    function isCurrentSync(generation: number, accessToken: string): boolean {
+      return (
+        generation === syncGeneration &&
+        authSession.value?.accessToken === accessToken
+      )
     }
 
     return {

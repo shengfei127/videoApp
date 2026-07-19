@@ -49,8 +49,19 @@ const activeFolder = computed(() =>
 const breadcrumbs = computed(() =>
   findFolderTrail(store.folderTree, activeFolder.value.path) ?? [store.folderTree]
 )
+const visibleFolders = computed(() =>
+  activeFolder.value.folders.slice(0, visibleLimit.value)
+)
 const visibleFolderVideos = computed(() =>
-  activeFolder.value.videos.slice(0, visibleLimit.value)
+  activeFolder.value.videos.slice(
+    0,
+    Math.max(0, visibleLimit.value - visibleFolders.value.length)
+  )
+)
+const hasMoreFolderEntries = computed(
+  () =>
+    visibleFolders.value.length + visibleFolderVideos.value.length <
+    activeFolder.value.folders.length + activeFolder.value.videos.length
 )
 const refreshDisabled = computed(() => {
   const retryAt = store.nextSyncAllowedAt
@@ -380,7 +391,7 @@ function findFolderTrail(
 
         <view v-if="activeFolder.folders.length" class="library-folder-list">
           <button
-            v-for="folder in activeFolder.folders"
+            v-for="folder in visibleFolders"
             :key="folder.path"
             type="button"
             data-testid="folder-row"
@@ -410,7 +421,7 @@ function findFolderTrail(
         </view>
 
         <button
-          v-if="visibleFolderVideos.length < activeFolder.videos.length"
+          v-if="hasMoreFolderEntries"
           type="button"
           data-testid="library-load-more"
           class="library-load-more"

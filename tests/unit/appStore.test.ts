@@ -396,6 +396,106 @@ describe('app store Baidu synchronization', () => {
     expect(context.store.progressHistory).toHaveLength(1)
     expect(context.store.lastError).toMatchObject({ code: 'authorization' })
   })
+
+  it('ignores an old authorization failure after disconnecting and loading a new session', async () => {
+    const context = createTestContext('sync-superseded-authorization')
+    const replacementSession = {
+      ...validSession(),
+      accessToken: 'replacement-token'
+    }
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    const page = deferred<VideoItem[]>()
+    context.listPage.mockReturnValue(page.promise)
+    const clearSession = vi.spyOn(context.authRepository, 'clearSession')
+
+    const oldRequest = context.store.syncBaidu(true)
+    expect(context.store.disconnectBaidu()).toBe(true)
+    context.authRepository.saveSession(replacementSession)
+    expect(context.store.reloadAuthSession()).toEqual(replacementSession)
+
+    page.reject(new BaiduError('authorization', 110))
+
+    await expect(oldRequest).resolves.toEqual({
+      ok: false,
+      reason: 'superseded'
+    })
+    expect(clearSession).toHaveBeenCalledOnce()
+    expect(context.store.authSession).toEqual(replacementSession)
+    expect(context.storage.read(AUTH_STORAGE_KEY, null)).toEqual(
+      replacementSession
+    )
+    expect(context.store.syncStatus).toBe('idle')
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it('does not restore catalog data when an old success returns after cache clear', async () => {
+    const context = createTestContext('sync-superseded-cache-clear')
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    const page = deferred<VideoItem[]>()
+    context.listPage.mockReturnValue(page.promise)
+
+    const oldRequest = context.store.syncBaidu(true)
+    expect(context.store.clearCatalogCache()).toBe(true)
+    page.resolve([baiduVideo('2', NOW)])
+
+    await expect(oldRequest).resolves.toEqual({
+      ok: false,
+      reason: 'superseded'
+    })
+    expect(context.cache.load()).toBeNull()
+    expect(context.store.baiduVideos).toEqual([])
+    expect(context.store.baiduCacheSavedAt).toBeNull()
+    expect(context.store.syncStatus).toBe('idle')
+    expect(context.store.lastError).toBeNull()
+  })
+
+  it('keeps a replacement session catalog when the old success returns later', async () => {
+    const context = createTestContext('sync-superseded-session-reload')
+    const replacementSession = {
+      ...validSession(),
+      accessToken: 'replacement-token'
+    }
+    const replacementVideo = baiduVideo('2', NOW)
+    context.authRepository.saveSession(validSession())
+    context.cache.saveSuccessful([baiduVideo('1', NOW)])
+    await context.store.initialize()
+    context.listPage.mockReset()
+    const oldPage = deferred<VideoItem[]>()
+    context.listPage
+      .mockReturnValueOnce(oldPage.promise)
+      .mockResolvedValueOnce([replacementVideo])
+
+    const oldRequest = context.store.syncBaidu(true)
+    context.authRepository.saveSession(replacementSession)
+    expect(context.store.reloadAuthSession()).toEqual(replacementSession)
+    context.advance(CATALOG_REFRESH_COOLDOWN_MS)
+
+    const replacementResult = await context.store.syncBaidu(true)
+    oldPage.resolve([baiduVideo('3', NOW)])
+    const oldResult = await oldRequest
+
+    expect(replacementResult).toMatchObject({
+      ok: true,
+      refreshed: true,
+      count: 1
+    })
+    expect(oldResult).toEqual({ ok: false, reason: 'superseded' })
+    expect(context.listPage.mock.calls).toEqual([
+      ['private-placeholder-token', 1],
+      ['replacement-token', 1]
+    ])
+    expect(context.store.authSession).toEqual(replacementSession)
+    expect(context.store.baiduVideos).toEqual([replacementVideo])
+    expect(context.cache.load()?.videos).toEqual([replacementVideo])
+    expect(context.store.syncStatus).toBe('success')
+    expect(context.store.lastError).toBeNull()
+  })
 })
 
 describe('app store sync state transitions', () => {

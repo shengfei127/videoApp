@@ -132,6 +132,62 @@ describe('Library page', () => {
     expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
   })
 
+  it('renders sibling folders in batches of 50', async () => {
+    const { wrapper } = mountLibrary((store) => {
+      store.baiduVideos = Array.from({ length: 120 }, (_, index) =>
+        video(
+          String(index + 1),
+          `目录视频 ${index + 1}.mp4`,
+          `/apps/片刻/目录 ${index + 1}/目录视频 ${index + 1}.mp4`,
+          1_000 - index
+        )
+      )
+    })
+    await wrapper.findAll('button.library-segment__button')[1]!.trigger('click')
+
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(50)
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(100)
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(120)
+    expect(wrapper.find('[data-testid="library-load-more"]').exists()).toBe(false)
+  })
+
+  it('shares each folder batch between folders first and videos second', async () => {
+    const { wrapper } = mountLibrary((store) => {
+      const folderVideos = Array.from({ length: 60 }, (_, index) =>
+        video(
+          String(index + 1),
+          `分组视频 ${index + 1}.mp4`,
+          `/apps/片刻/分组 ${index + 1}/分组视频 ${index + 1}.mp4`,
+          2_000 - index
+        )
+      )
+      const rootVideos = Array.from({ length: 60 }, (_, index) =>
+        video(
+          String(index + 1_001),
+          `根视频 ${index + 1}.mp4`,
+          `/apps/片刻/根视频 ${index + 1}.mp4`,
+          1_000 - index
+        )
+      )
+      store.baiduVideos = [...folderVideos, ...rootVideos]
+    })
+    await wrapper.findAll('button.library-segment__button')[1]!.trigger('click')
+
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(50)
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(0)
+
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(60)
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(40)
+
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="folder-row"]')).toHaveLength(60)
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(60)
+    expect(wrapper.find('[data-testid="library-load-more"]').exists()).toBe(false)
+  })
+
   it('debounces search, resets its batch immediately, and loads matching results in batches', async () => {
     vi.useFakeTimers()
     const { store, wrapper } = mountLibrary((appStore) => {
