@@ -31,14 +31,18 @@ const savedPosition = computed(() =>
 )
 const continueButton = ref<HTMLButtonElement | null>(null)
 
-watch(visible, async (isVisible) => {
-  if (!isVisible) {
-    return
-  }
+watch(
+  visible,
+  async (isVisible) => {
+    if (!isVisible) {
+      return
+    }
 
-  await nextTick()
-  continueButton.value?.focus()
-})
+    await nextTick()
+    continueButton.value?.focus()
+  },
+  { immediate: true }
+)
 
 function formatDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds))

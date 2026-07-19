@@ -79,4 +79,20 @@ describe('ResumeDialog', () => {
     expect(focus).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('moves focus to continue when mounted already open and resumable', async () => {
+    const focus = vi.spyOn(HTMLButtonElement.prototype, 'focus')
+    const wrapper = mount(ResumeDialog, {
+      props: { open: true, progress: resumable },
+      attachTo: document.body
+    })
+
+    await flushPromises()
+
+    expect(focus).toHaveBeenCalledOnce()
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-testid="resume-continue"]').element
+    )
+    wrapper.unmount()
+  })
 })
