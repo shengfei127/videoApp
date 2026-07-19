@@ -1,2 +1,14 @@
 .worktrees/
 .superpowers/
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+output/playwright/
+.playwright-cli/
+.npm-cache/
+.env
+.env.*
+!.env.example
+*.local

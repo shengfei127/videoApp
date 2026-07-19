@@ -1,0 +1,447 @@
+import { readRuntimeBuildEnvironment } from '@/config/runtime'
+
+import {
+  toBaiduHttpError,
+  toBaiduNetworkError,
+  toBaiduResponseError,
+  toBaiduValidationError
+} from './baiduErrors'
+
+export const BAIDU_FILE_ENDPOINT =
+  'https://pan.baidu.com/rest/2.0/xpan/file' as const
+export const BAIDU_MULTIMEDIA_ENDPOINT =
+  'https://pan.baidu.com/rest/2.0/xpan/multimedia' as const
+
+export type BaiduEndpoint =
+  | typeof BAIDU_FILE_ENDPOINT
+  | typeof BAIDU_MULTIMEDIA_ENDPOINT
+
+export interface BaiduHttpRequest {
+  readonly endpoint: BaiduEndpoint
+  readonly data: Readonly<Record<string, unknown>>
+}
+
+export type BaiduVideolistRequest = Readonly<{
+  method: 'videolist'
+  access_token: string
+  parent_path: string
+  recursion: 1
+  web: 1
+  num: 1000
+  page: number
+}>
+
+export type BaiduFilemetasRequest = Readonly<{
+  method: 'filemetas'
+  access_token: string
+  fsids: string
+  dlink: 1
+  thumb: 1
+  needmedia: 1
+}>
+
+export type BaiduApiRequest =
+  | BaiduVideolistRequest
+  | BaiduFilemetasRequest
+
+export type BaiduTransport = (request: BaiduApiRequest) => Promise<unknown>
+
+interface UniSuccessResponse {
+  readonly statusCode: number
+  readonly data: unknown
+}
+
+interface UniFailureResponse {
+  readonly errMsg?: string
+}
+
+interface UniRequestOptions {
+  readonly url: string
+  readonly method: 'GET'
+  readonly data: Readonly<Record<string, unknown>>
+  readonly header: Readonly<{ 'User-Agent': 'pan.baidu.com' }>
+  readonly timeout: 15_000
+  readonly dataType: 'text'
+  readonly success: (response: UniSuccessResponse) => void
+  readonly fail: (failure: UniFailureResponse) => void
+}
+
+export type UniRequestAdapter = (options: UniRequestOptions) => unknown
+
+export function createBaiduTransport(
+  request: UniRequestAdapter = defaultUniRequest
+): BaiduTransport {
+  return (data) => {
+    const endpoint =
+      data.method === 'videolist'
+        ? BAIDU_FILE_ENDPOINT
+        : BAIDU_MULTIMEDIA_ENDPOINT
+
+    return requestBaiduJson({ endpoint, data }, request)
+  }
+}
+
+export const baiduTransport: BaiduTransport = createBaiduTransport()
+
+export function requestBaiduJson(
+  input: BaiduHttpRequest,
+  request: UniRequestAdapter = defaultUniRequest
+): Promise<unknown> {
+  if (!isAllowedEndpoint(input?.endpoint) || !isRecord(input?.data)) {
+    return Promise.reject(toBaiduValidationError())
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+
+    const resolveOnce = (value: unknown): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      resolve(value)
+    }
+    const rejectOnce = (error: unknown): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      reject(error)
+    }
+
+    const success = (response: UniSuccessResponse): void => {
+      if (settled) {
+        return
+      }
+
+      try {
+        const status = response?.statusCode
+        if (
+          !Number.isSafeInteger(status) ||
+          status < 200 ||
+          status >= 300
+        ) {
+          rejectOnce(
+            Number.isSafeInteger(status) && status >= 100 && status <= 599
+              ? toBaiduHttpError(status)
+              : toBaiduResponseError()
+          )
+          return
+        }
+
+        const parsed = parseJson(response.data)
+        if (!isRecord(parsed)) {
+          rejectOnce(toBaiduResponseError())
+          return
+        }
+
+        resolveOnce(parsed)
+      } catch {
+        rejectOnce(toBaiduResponseError())
+      }
+    }
+
+    const fail = (failure: UniFailureResponse): void => {
+      if (settled) {
+        return
+      }
+
+      let timedOut = false
+      try {
+        timedOut =
+          typeof failure?.errMsg === 'string' &&
+          /timeout/iu.test(failure.errMsg)
+      } catch {
+        timedOut = false
+      }
+
+      rejectOnce(toBaiduNetworkError(timedOut ? 'timeout' : 'failure'))
+    }
+
+    try {
+      request({
+        url: input.endpoint,
+        method: 'GET',
+        data: input.data,
+        header: { 'User-Agent': 'pan.baidu.com' },
+        timeout: 15_000,
+        dataType: 'text',
+        success,
+        fail
+      })
+    } catch {
+      rejectOnce(toBaiduNetworkError('failure'))
+    }
+  })
+}
+
+function defaultUniRequest(options: UniRequestOptions): unknown {
+  const platform = readRuntimeBuildEnvironment().uniPlatform
+  if (platform === 'app' || platform === 'app-plus') {
+    return (uni.request as unknown as UniRequestAdapter)(options)
+  }
+
+  const { header: _forbiddenBrowserHeader, ...browserOptions } = options
+  return (
+    uni.request as unknown as (
+      input: Omit<UniRequestOptions, 'header'>
+    ) => unknown
+  )(browserOptions)
+}
+
+function isAllowedEndpoint(value: unknown): value is BaiduEndpoint {
+  return (
+    value === BAIDU_FILE_ENDPOINT || value === BAIDU_MULTIMEDIA_ENDPOINT
+  )
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseJson(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    throw new Error('Invalid Baidu response')
+  }
+
+  return JSON.parse(rewriteFsIdValues(value)) as unknown
+}
+
+const UINT64_MAX = '18446744073709551615'
+
+function rewriteFsIdValues(source: string): string {
+  return new FsIdJsonRewriter(source).rewrite()
+}
+
+class FsIdJsonRewriter {
+  private index = 0
+  private readonly output: string[] = []
+
+  constructor(private readonly source: string) {}
+
+  rewrite(): string {
+    this.copyWhitespace()
+    this.rewriteValue(false)
+    this.copyWhitespace()
+    if (this.index !== this.source.length) {
+      this.fail()
+    }
+
+    return this.output.join('')
+  }
+
+  private rewriteValue(isFsId: boolean): void {
+    this.copyWhitespace()
+    if (this.index >= this.source.length) {
+      this.fail()
+    }
+
+    if (isFsId) {
+      this.rewriteFsIdValue()
+      return
+    }
+
+    switch (this.source[this.index]) {
+      case '{':
+        this.rewriteObject()
+        return
+      case '[':
+        this.rewriteArray()
+        return
+      case '"':
+        this.output.push(this.readStringToken())
+        return
+      default:
+        this.copyPrimitive()
+    }
+  }
+
+  private rewriteObject(): void {
+    this.copyCharacter('{')
+    this.copyWhitespace()
+    if (this.source[this.index] === '}') {
+      this.copyCharacter('}')
+      return
+    }
+
+    while (this.index < this.source.length) {
+      if (this.source[this.index] !== '"') {
+        this.fail()
+      }
+
+      const keyToken = this.readStringToken()
+      this.output.push(keyToken)
+      const key = JSON.parse(keyToken) as unknown
+      if (typeof key !== 'string') {
+        this.fail()
+      }
+
+      this.copyWhitespace()
+      this.copyCharacter(':')
+      this.rewriteValue(key === 'fs_id')
+      this.copyWhitespace()
+
+      const delimiter = this.source[this.index]
+      if (delimiter === '}') {
+        this.copyCharacter('}')
+        return
+      }
+      if (delimiter !== ',') {
+        this.fail()
+      }
+
+      this.copyCharacter(',')
+      this.copyWhitespace()
+    }
+
+    this.fail()
+  }
+
+  private rewriteArray(): void {
+    this.copyCharacter('[')
+    this.copyWhitespace()
+    if (this.source[this.index] === ']') {
+      this.copyCharacter(']')
+      return
+    }
+
+    while (this.index < this.source.length) {
+      this.rewriteValue(false)
+      this.copyWhitespace()
+
+      const delimiter = this.source[this.index]
+      if (delimiter === ']') {
+        this.copyCharacter(']')
+        return
+      }
+      if (delimiter !== ',') {
+        this.fail()
+      }
+
+      this.copyCharacter(',')
+      this.copyWhitespace()
+    }
+
+    this.fail()
+  }
+
+  private rewriteFsIdValue(): void {
+    let value: string
+    if (this.source[this.index] === '"') {
+      const token = this.readStringToken()
+      const decoded = JSON.parse(token) as unknown
+      if (typeof decoded !== 'string') {
+        this.fail()
+      }
+      value = decoded
+    } else {
+      value = this.readPrimitiveToken()
+    }
+
+    if (!isCanonicalUint64(value)) {
+      this.fail()
+    }
+
+    this.output.push(JSON.stringify(value))
+  }
+
+  private copyPrimitive(): void {
+    this.output.push(this.readPrimitiveToken())
+  }
+
+  private readPrimitiveToken(): string {
+    const start = this.index
+    while (this.index < this.source.length) {
+      const character = this.source[this.index]
+      if (
+        isJsonWhitespace(character) ||
+        character === ',' ||
+        character === ']' ||
+        character === '}'
+      ) {
+        break
+      }
+      this.index += 1
+    }
+
+    if (this.index === start) {
+      this.fail()
+    }
+    return this.source.slice(start, this.index)
+  }
+
+  private readStringToken(): string {
+    const start = this.index
+    this.index += 1
+
+    while (this.index < this.source.length) {
+      const character = this.source[this.index]
+      if (character === '"') {
+        this.index += 1
+        return this.source.slice(start, this.index)
+      }
+
+      if (character === '\\') {
+        const escape = this.source[this.index + 1]
+        if (escape === 'u') {
+          const unicodeEscape = this.source.slice(
+            this.index + 2,
+            this.index + 6
+          )
+          if (!/^[0-9A-F]{4}$/iu.test(unicodeEscape)) {
+            this.fail()
+          }
+          this.index += 6
+          continue
+        }
+        if (!escape || !/["\\/bfnrt]/u.test(escape)) {
+          this.fail()
+        }
+        this.index += 2
+        continue
+      }
+
+      if (character.charCodeAt(0) < 0x20) {
+        this.fail()
+      }
+      this.index += 1
+    }
+
+    this.fail()
+  }
+
+  private copyWhitespace(): void {
+    const start = this.index
+    while (
+      this.index < this.source.length &&
+      isJsonWhitespace(this.source[this.index])
+    ) {
+      this.index += 1
+    }
+    this.output.push(this.source.slice(start, this.index))
+  }
+
+  private copyCharacter(expected: string): void {
+    if (this.source[this.index] !== expected) {
+      this.fail()
+    }
+    this.output.push(expected)
+    this.index += 1
+  }
+
+  private fail(): never {
+    throw new Error('Invalid Baidu response')
+  }
+}
+
+function isJsonWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\t' || value === '\n' || value === '\r'
+}
+
+function isCanonicalUint64(value: string): boolean {
+  return (
+    /^[1-9]\d*$/u.test(value) &&
+    (value.length < UINT64_MAX.length ||
+      (value.length === UINT64_MAX.length && value <= UINT64_MAX))
+  )
+}

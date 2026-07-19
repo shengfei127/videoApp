@@ -119,7 +119,7 @@ Create <code>package.json</code> with this dependency set. Keep all DCloud packa
     "vue-i18n": "9.14.5"
   },
   "devDependencies": {
-    "@dcloudio/types": "3.4.8",
+    "@dcloudio/types": "3.4.31",
     "@dcloudio/uni-cli-shared": "3.0.0-5010520260709002",
     "@dcloudio/vite-plugin-uni": "3.0.0-5010520260709002",
     "@playwright/test": "1.49.1",
@@ -312,7 +312,8 @@ export function createApp() {
 
 ~~~vue
 <!-- src/App.vue -->
-<script setup lang="ts">
+<script lang="ts">
+export default {}
 </script>
 
 <style lang="scss">
