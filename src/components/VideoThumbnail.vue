@@ -45,21 +45,59 @@ function toSafeThumbnailUrl(value: string | undefined): string | undefined {
 
 function hasSensitiveQuery(searchParams: URLSearchParams): boolean {
   for (const [key, value] of searchParams) {
-    const normalizedKey = key.toLocaleLowerCase('en-US')
-    if (
-      normalizedKey === 'token' ||
-      normalizedKey.endsWith('_token') ||
-      normalizedKey.endsWith('-token') ||
-      normalizedKey === 'authorization' ||
-      normalizedKey === 'dlink' ||
-      /(?:^|[^a-z0-9_-])(?:access_token|token|authorization|dlink)=/iu.test(value) ||
-      /\bbearer\s+\S+/iu.test(value)
-    ) {
+    if (isSensitiveQueryKey(key) || hasSensitiveQueryValue(value)) {
       return true
     }
   }
 
   return false
+}
+
+function isSensitiveQueryKey(key: string): boolean {
+  const normalizedKey = key.toLocaleLowerCase('en-US')
+  return (
+    normalizedKey === 'token' ||
+    normalizedKey.endsWith('_token') ||
+    normalizedKey.endsWith('-token') ||
+    normalizedKey === 'authorization' ||
+    normalizedKey === 'dlink'
+  )
+}
+
+function hasSensitiveQueryValue(value: string): boolean {
+  if (/\bbearer\s+\S+/iu.test(value)) {
+    return true
+  }
+
+  for (
+    let equalsIndex = value.indexOf('=');
+    equalsIndex >= 0;
+    equalsIndex = value.indexOf('=', equalsIndex + 1)
+  ) {
+    let keyStart = equalsIndex
+    while (
+      keyStart > 0 &&
+      isQueryKeyCharacter(value.charCodeAt(keyStart - 1))
+    ) {
+      keyStart -= 1
+    }
+
+    if (isSensitiveQueryKey(value.slice(keyStart, equalsIndex))) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function isQueryKeyCharacter(charCode: number): boolean {
+  return (
+    (charCode >= 48 && charCode <= 57) ||
+    (charCode >= 65 && charCode <= 90) ||
+    (charCode >= 97 && charCode <= 122) ||
+    charCode === 45 ||
+    charCode === 95
+  )
 }
 </script>
 

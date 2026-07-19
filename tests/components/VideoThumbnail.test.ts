@@ -59,6 +59,8 @@ describe('VideoThumbnail', () => {
     'https://images.example.test/still.jpg?next=access_token%3Dsecret',
     'https://images.example.test/still.jpg?next=https%3A%2F%2Fexample.test%2Faccess_token%3Dsecret',
     'https://images.example.test/still.jpg?next=ToKeN%3Dsecret',
+    'https://images.example.test/still.jpg?next=session_token%3Dsecret',
+    'https://images.example.test/still.jpg?next=session-token%3Dsecret',
     'https://images.example.test/still.jpg?header=AUTHORIZATION%3DBearer%20secret',
     'https://images.example.test/still.jpg?next=dLiNk%3Dsigned-download',
     'https://images.example.test/still.jpg?header=Bearer%20secret'
@@ -73,9 +75,9 @@ describe('VideoThumbnail', () => {
     )
   })
 
-  it('keeps benign sign and quality query parameters visible', () => {
+  it('keeps benign sign, signature, and quality query parameters visible', () => {
     const src =
-      'https://images.example.test/still.jpg?sign=thumbnail-signature&quality=80'
+      'https://images.example.test/still.jpg?sign=thumbnail-sign&signature=thumbnail-signature&quality=80'
     const wrapper = mount(VideoThumbnail, {
       props: { src, alt: '可用封面' }
     })
