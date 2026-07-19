@@ -1,0 +1,16 @@
+{
+  "version": "1",
+  "prompt": "template",
+  "title": "服务协议和隐私政策",
+  "message": "请你审慎阅读并充分理解《服务协议》和《隐私政策》。为提供视频播放、播放进度保存及百度网盘授权服务，应用会在本机保存播放进度和媒体直链；百度授权仅用于访问你授权的应用专属目录。应用基于 DCloud uni-app 运行，运行期间会处理设备标识、启动数据和异常日志，用于统计分析和改进性能。详情请阅读<a href=\"https://dcloud.io/license/appprivacy.html\">《DCloud App引擎隐私政策》</a>。同意后即可开始使用。",
+  "buttonAccept": "同意并继续",
+  "buttonRefuse": "退出应用",
+  "hrefLoader": "system",
+  "backToExit": "true",
+  "disagreeMode": {
+    "support": false,
+    "loadNativePlugins": false,
+    "visitorEntry": false,
+    "showAlways": true
+  }
+}
