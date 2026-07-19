@@ -18,6 +18,30 @@ describe('PlayerLifecycle', () => {
     expect(save).not.toHaveBeenCalled()
   })
 
+  it('requires loaded metadata even when playback and time updates arrive first', () => {
+    const save = vi.fn()
+    const lifecycle = new PlayerLifecycle({
+      videoId: 'video-1',
+      save,
+      now: () => 1_000
+    })
+
+    lifecycle.onPlaybackBegin()
+    lifecycle.onTimeUpdate(100, 600)
+    lifecycle.onPause(100, 600)
+    lifecycle.onHide(100, 600)
+    lifecycle.onUnload(100, 600)
+    lifecycle.onEnded(600)
+
+    expect(save).not.toHaveBeenCalled()
+
+    lifecycle.onMetadata(600)
+    lifecycle.onTimeUpdate(100, 600)
+
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledWith('video-1', 100, 600, 1_000)
+  })
+
   it('seeks to the saved position when continuing after playback starts', () => {
     const save = vi.fn()
     const lifecycle = new PlayerLifecycle({

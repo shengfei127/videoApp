@@ -88,7 +88,6 @@ export class PlayerLifecycle {
     const duration = normalizeDuration(durationSeconds)
     if (duration > 0) {
       this.metadataDuration = duration
-      this.metadataReady = true
     }
   }
 
