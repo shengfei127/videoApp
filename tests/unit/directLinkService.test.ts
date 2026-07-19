@@ -467,6 +467,42 @@ describe('DirectLinkService', () => {
     expect(randomUUID).toHaveBeenCalledOnce()
   })
 
+  it('uses an RFC4122 v4 secure-byte fallback when randomUUID is unavailable', () => {
+    const getRandomValues = vi.fn((bytes: Uint8Array) => {
+      bytes.fill(0)
+      return bytes
+    })
+    vi.stubGlobal('crypto', { getRandomValues })
+    const service = new DirectLinkService(createMemoryStorage(), {
+      now: () => 1000
+    })
+
+    expect(
+      service.add({ url: 'https://cdn.example.test/fallback.mp4' }).id
+    ).toBe('00000000-0000-4000-8000-000000000000')
+    expect(getRandomValues.mock.calls[0]?.[0]).toHaveLength(16)
+  })
+
+  it('uses the secure-byte fallback when randomUUID throws', () => {
+    const getRandomValues = vi.fn((bytes: Uint8Array) => {
+      bytes.fill(0xff)
+      return bytes
+    })
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn(() => {
+        throw new Error('Android WebView randomUUID unavailable')
+      }),
+      getRandomValues
+    })
+    const service = new DirectLinkService(createMemoryStorage(), {
+      now: () => 1000
+    })
+
+    expect(
+      service.add({ url: 'https://cdn.example.test/fallback.mp4' }).id
+    ).toBe('ffffffff-ffff-4fff-bfff-ffffffffffff')
+  })
+
   it('ignores an injected UUID factory and always uses guarded global crypto', () => {
     const randomUUID = vi.fn(() => 'crypto-uuid')
     vi.stubGlobal('crypto', { randomUUID })
@@ -482,7 +518,7 @@ describe('DirectLinkService', () => {
     expect(randomUUID).toHaveBeenCalledOnce()
   })
 
-  it('throws a clear user-facing error when crypto.randomUUID is unavailable', () => {
+  it('throws a clear user-facing error when both secure random APIs are unavailable', () => {
     vi.stubGlobal('crypto', {})
     const service = new DirectLinkService(createMemoryStorage(), {
       now: () => 1000

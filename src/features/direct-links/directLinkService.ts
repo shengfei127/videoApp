@@ -1,5 +1,6 @@
 import type { DirectVideoRecord } from '@/domain/video'
 import type { KeyValueStorage } from '@/infrastructure/storage'
+import { createSecureUuid } from '@/infrastructure/secureRandom'
 
 export type DirectUrlKind = 'mp4' | 'hls' | 'unknown' | 'invalid'
 
@@ -249,11 +250,7 @@ function resolveName(name: string | undefined, url: URL): string {
 }
 
 function createDefaultUuid(): string {
-  if (typeof globalThis.crypto?.randomUUID !== 'function') {
-    throw new Error('当前环境无法安全生成媒体链接 ID')
-  }
-
-  return globalThis.crypto.randomUUID()
+  return createSecureUuid()
 }
 
 function normalizeDirectVideoRecord(

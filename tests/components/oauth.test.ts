@@ -118,6 +118,88 @@ describe('OAuth page', () => {
     expect(store.authSession?.accessToken).toBe('private-oauth-token')
   })
 
+  it.each(['authorization', 'no-session'] as const)(
+    'rolls back a new session without redirect when sync returns %s and no previous session exists',
+    async (reason) => {
+      oauthPageMocks.openOAuthWebview.mockImplementation(
+        (options: OpenOAuthWebviewOptions) => {
+          const pending = options.createPendingState()
+          queueCallback(options, pending, validCallback(pending.state))
+          return { enabled: true, close: vi.fn() }
+        }
+      )
+      const { store, wrapper } = mountOAuth()
+      store.syncBaidu = vi.fn().mockResolvedValue({ ok: false, reason })
+
+      await vi.waitFor(() => {
+        expect(wrapper.get('[role="alert"]').text()).toBe(
+          '百度网盘授权失败，请重试'
+        )
+      })
+
+      expect(new AuthRepository(uniStorage).getValidSession(Date.now())).toBeNull()
+      expect(store.authSession).toBeNull()
+      expect(uni.redirectTo).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['authorization', 'no-session'] as const)(
+    'restores the previous session without redirect when sync returns %s',
+    async (reason) => {
+      const repository = new AuthRepository(uniStorage)
+      repository.saveSession({
+        accessToken: 'previous-private-token',
+        expiresAt: Date.now() + 7_200_000,
+        scope: ['basic', 'netdisk']
+      })
+      oauthPageMocks.openOAuthWebview.mockImplementation(
+        (options: OpenOAuthWebviewOptions) => {
+          const pending = options.createPendingState()
+          queueCallback(options, pending, validCallback(pending.state))
+          return { enabled: true, close: vi.fn() }
+        }
+      )
+      const { store, wrapper } = mountOAuth()
+      store.syncBaidu = vi.fn().mockResolvedValue({ ok: false, reason })
+
+      await vi.waitFor(() => {
+        expect(wrapper.get('[role="alert"]').text()).toBe(
+          '百度网盘授权失败，请重试'
+        )
+      })
+
+      expect(repository.getValidSession(Date.now())?.accessToken).toBe(
+        'previous-private-token'
+      )
+      expect(store.authSession?.accessToken).toBe('previous-private-token')
+      expect(wrapper.html()).not.toContain('previous-private-token')
+      expect(uni.redirectTo).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps a valid new session and redirects when initial sync has a network failure', async () => {
+    oauthPageMocks.openOAuthWebview.mockImplementation(
+      (options: OpenOAuthWebviewOptions) => {
+        const pending = options.createPendingState()
+        queueCallback(options, pending, validCallback(pending.state))
+        return { enabled: true, close: vi.fn() }
+      }
+    )
+    const { store } = mountOAuth()
+    store.syncBaidu = vi.fn().mockResolvedValue({ ok: false, reason: 'failed' })
+
+    await vi.waitFor(() => {
+      expect(uni.redirectTo).toHaveBeenCalledWith({
+        url: '/pages/home/index'
+      })
+    })
+
+    expect(new AuthRepository(uniStorage).getValidSession(Date.now())?.accessToken).toBe(
+      'private-oauth-token'
+    )
+    expect(store.authSession?.accessToken).toBe('private-oauth-token')
+  })
+
   it('does not save a failed callback and renders only a safe error', async () => {
     const rawSecret = 'RAW_CALLBACK_TOKEN_MUST_NOT_RENDER'
     oauthPageMocks.openOAuthWebview.mockImplementation(
@@ -226,10 +308,12 @@ function queueCallback(
   pending: OAuthPendingState,
   callbackUrl: string
 ): void {
-  Promise.resolve().then(async () => {
-    const consumed = options.consumePendingState()
-    await options.onCallback(callbackUrl, consumed ?? pending)
-  })
+  Promise.resolve()
+    .then(async () => {
+      const consumed = options.consumePendingState()
+      await options.onCallback(callbackUrl, consumed ?? pending)
+    })
+    .catch(() => options.onCallbackFailure?.())
 }
 
 function validCallback(state: string): string {

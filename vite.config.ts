@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vite'
 import uniModule from '@dcloudio/vite-plugin-uni'
+import packageMetadata from './package.json'
 
 import { createPiankeBuildDefines } from './src/config/buildConstants'
 
@@ -13,5 +14,10 @@ const uni = (
 
 export default defineConfig(({ mode, command }) => ({
   plugins: [uni()],
-  define: createPiankeBuildDefines(process.env.UNI_PLATFORM, mode, command)
+  define: createPiankeBuildDefines(
+    process.env.UNI_PLATFORM,
+    mode,
+    command,
+    packageMetadata.version
+  )
 }))

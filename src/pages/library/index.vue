@@ -20,25 +20,37 @@ import { useAppStore } from '@/stores/appStore'
 
 type LibraryView = 'recent' | 'folders'
 
+const LIBRARY_BATCH_SIZE = 50
+const SEARCH_DEBOUNCE_MS = 200
+
 const store = useAppStore()
 const directLinkService = new DirectLinkService(uniStorage)
 const activeView = ref<LibraryView>('recent')
 const activeFolderPath = ref(store.folderTree.path)
+const searchInput = ref(store.searchQuery)
 const importOpen = ref(false)
 const editingRecord = ref<DirectVideoRecord | undefined>()
 const refreshing = ref(false)
 const cooldownClock = ref(Date.now())
+const visibleLimit = ref(LIBRARY_BATCH_SIZE)
 let cooldownTimer: ReturnType<typeof setTimeout> | undefined
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 
 const hasSearch = computed(() => Boolean(store.searchQuery.trim()))
 const listedVideos = computed(() =>
   hasSearch.value ? store.searchResults : store.recentVideos
+)
+const visibleListedVideos = computed(() =>
+  listedVideos.value.slice(0, visibleLimit.value)
 )
 const activeFolder = computed(() =>
   findFolder(store.folderTree, activeFolderPath.value) ?? store.folderTree
 )
 const breadcrumbs = computed(() =>
   findFolderTrail(store.folderTree, activeFolder.value.path) ?? [store.folderTree]
+)
+const visibleFolderVideos = computed(() =>
+  activeFolder.value.videos.slice(0, visibleLimit.value)
 )
 const refreshDisabled = computed(() => {
   const retryAt = store.nextSyncAllowedAt
@@ -56,9 +68,17 @@ watch(
   { immediate: true }
 )
 
+watch(searchInput, (query) => {
+  resetVisibleLimit()
+  scheduleSearch(query)
+})
+
 onUnmounted(() => {
   if (cooldownTimer !== undefined) {
     clearTimeout(cooldownTimer)
+  }
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer)
   }
 })
 
@@ -70,6 +90,7 @@ onLoad((query) => {
 
 function setView(view: LibraryView): void {
   activeView.value = view
+  resetVisibleLimit()
   if (view === 'folders') {
     activeFolderPath.value = store.folderTree.path
   }
@@ -77,6 +98,7 @@ function setView(view: LibraryView): void {
 
 function enterFolder(folder: VideoFolder): void {
   activeFolderPath.value = folder.path
+  resetVisibleLimit()
 }
 
 function openNewImport(): void {
@@ -103,6 +125,7 @@ function closeImport(): void {
 
 function reloadDirectCatalog(): void {
   store.reloadDirectRecords()
+  resetVisibleLimit()
 }
 
 function openPlayer(video: VideoItem): void {
@@ -150,6 +173,28 @@ function countFolderVideos(folder: VideoFolder): number {
       0
     )
   )
+}
+
+function loadMore(): void {
+  visibleLimit.value += LIBRARY_BATCH_SIZE
+}
+
+function resetVisibleLimit(): void {
+  visibleLimit.value = LIBRARY_BATCH_SIZE
+}
+
+function scheduleSearch(query: string): void {
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer)
+  }
+
+  searchTimer = setTimeout(() => {
+    store.searchQuery = query
+    searchTimer = undefined
+  }, SEARCH_DEBOUNCE_MS)
+
+  const timerWithUnref = searchTimer as unknown as { unref?: () => void }
+  timerWithUnref.unref?.()
 }
 
 function scheduleCooldownClock(retryAt: number | null): void {
@@ -247,7 +292,7 @@ function findFolderTrail(
     <label class="library-search">
       <Search :size="20" :stroke-width="1.9" aria-hidden="true" />
       <input
-        v-model="store.searchQuery"
+        v-model="searchInput"
         data-testid="library-search"
         type="text"
         confirm-type="search"
@@ -282,7 +327,7 @@ function findFolderTrail(
       <template v-if="hasSearch || activeView === 'recent'">
         <view v-if="listedVideos.length" class="library-video-list">
           <view
-            v-for="video in listedVideos"
+            v-for="video in visibleListedVideos"
             :key="video.id"
             class="library-video-entry"
           >
@@ -307,6 +352,15 @@ function findFolderTrail(
         >
           {{ hasSearch ? '没有找到匹配的视频' : '暂无视频' }}
         </view>
+        <button
+          v-if="visibleListedVideos.length < listedVideos.length"
+          type="button"
+          data-testid="library-load-more"
+          class="library-load-more"
+          @click="loadMore"
+        >
+          加载更多
+        </button>
       </template>
 
       <template v-else>
@@ -347,13 +401,23 @@ function findFolderTrail(
 
         <view v-if="activeFolder.videos.length" class="library-video-list">
           <view
-            v-for="video in activeFolder.videos"
+            v-for="video in visibleFolderVideos"
             :key="video.id"
             class="library-video-entry"
           >
             <VideoRow :video="video" @select="openPlayer" />
           </view>
         </view>
+
+        <button
+          v-if="visibleFolderVideos.length < activeFolder.videos.length"
+          type="button"
+          data-testid="library-load-more"
+          class="library-load-more"
+          @click="loadMore"
+        >
+          加载更多
+        </button>
 
         <view
           v-if="!activeFolder.folders.length && !activeFolder.videos.length"
@@ -608,6 +672,23 @@ function findFolderTrail(
   font-size: 23rpx;
   line-height: 1.45;
   background: rgba($color-surface, 0.5);
+}
+
+.library-load-more {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 72rpx;
+  margin: 14rpx 0 0;
+  padding: 10rpx 18rpx;
+  border: 1px solid $color-primary;
+  border-radius: $radius-control;
+  color: $color-primary;
+  font-size: 22rpx;
+  font-weight: 700;
+  background: $color-primary-soft;
 }
 
 .library-icon--spinning {

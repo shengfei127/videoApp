@@ -111,7 +111,14 @@ async function completeAuthorization(
     authRepository.saveSession(session)
     savedNewSession = true
     store.reloadAuthSession()
-    await store.syncBaidu(true)
+    const syncResult = await store.syncBaidu(true)
+    if (
+      !syncResult.ok &&
+      (syncResult.reason === 'authorization' ||
+        syncResult.reason === 'no-session')
+    ) {
+      throw new Error('OAuth session was rejected during initial sync')
+    }
 
     if (disposed) {
       return

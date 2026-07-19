@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { Check, Link, Trash2, X } from 'lucide-vue-next'
 
 import type { DirectVideoRecord } from '@/domain/video'
@@ -31,6 +31,8 @@ const name = ref('')
 const errorMessage = ref('')
 const forceUrl = ref<string | null>(null)
 const loading = ref(false)
+let operationGeneration = 0
+let disposed = false
 
 const isEditing = computed(() => Boolean(props.record))
 const service = computed(() => props.service ?? defaultService)
@@ -45,7 +47,10 @@ const canForce = computed(
 watch(
   () => [props.open, props.record] as const,
   ([open, record]) => {
+    invalidateOperation()
     if (!open) {
+      errorMessage.value = ''
+      forceUrl.value = null
       return
     }
 
@@ -58,9 +63,20 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => [props.service, props.probe] as const,
+  () => invalidateOperation()
+)
+
 watch(url, () => {
+  invalidateOperation()
   errorMessage.value = ''
   forceUrl.value = null
+})
+
+onUnmounted(() => {
+  disposed = true
+  invalidateOperation()
 })
 
 async function submit(): Promise<void> {
@@ -69,30 +85,44 @@ async function submit(): Promise<void> {
   }
 
   const submittedUrl = url.value.trim()
+  const submittedName = name.value
+  const submittedRecordId = props.record?.id
+  const submittedService = service.value
+  const submittedProbe = probe.value
   const kind = classifyDirectUrl(submittedUrl)
+  const operation = beginOperation()
   errorMessage.value = ''
   forceUrl.value = null
 
   if (kind === 'invalid') {
-    errorMessage.value = '请输入有效的 HTTPS 媒体链接'
+    if (isCurrentOperation(operation)) {
+      errorMessage.value = '请输入有效的 HTTPS 媒体链接'
+      loading.value = false
+    }
     return
   }
 
-  loading.value = true
   try {
     if (kind === 'mp4' || kind === 'hls') {
-      saveRecord(submittedUrl)
+      if (isCurrentOperation(operation)) {
+        saveRecord(
+          submittedService,
+          submittedRecordId,
+          submittedUrl,
+          submittedName
+        )
+      }
       return
     }
 
     let contentType: string | undefined
     try {
-      contentType = await probe.value(submittedUrl)
+      contentType = await submittedProbe(submittedUrl)
     } catch {
       contentType = undefined
     }
 
-    if (url.value.trim() !== submittedUrl || !props.open) {
+    if (!isCurrentOperation(operation)) {
       return
     }
 
@@ -102,11 +132,21 @@ async function submit(): Promise<void> {
       return
     }
 
-    saveRecord(submittedUrl, contentType)
+    saveRecord(
+      submittedService,
+      submittedRecordId,
+      submittedUrl,
+      submittedName,
+      contentType
+    )
   } catch {
-    errorMessage.value = '暂时无法保存媒体直链，请重试'
+    if (isCurrentOperation(operation)) {
+      errorMessage.value = '暂时无法保存媒体直链，请重试'
+    }
   } finally {
-    loading.value = false
+    if (isCurrentOperation(operation)) {
+      loading.value = false
+    }
   }
 }
 
@@ -115,26 +155,42 @@ function forceSave(): void {
     return
   }
 
-  loading.value = true
+  const operation = beginOperation()
+  const submittedService = service.value
+  const submittedRecordId = props.record?.id
+  const submittedName = name.value
+  const submittedUrl = forceUrl.value
   errorMessage.value = ''
   try {
-    const input = { url: forceUrl.value, name: name.value }
-    const saved = props.record
-      ? service.value.updateUnverified(props.record.id, input)
-      : service.value.addUnverified(input)
-    finishSave(saved)
+    const input = { url: submittedUrl, name: submittedName }
+    const saved = submittedRecordId
+      ? submittedService.updateUnverified(submittedRecordId, input)
+      : submittedService.addUnverified(input)
+    if (isCurrentOperation(operation)) {
+      finishSave(saved)
+    }
   } catch {
-    errorMessage.value = '暂时无法保存媒体直链，请重试'
+    if (isCurrentOperation(operation)) {
+      errorMessage.value = '暂时无法保存媒体直链，请重试'
+    }
   } finally {
-    loading.value = false
+    if (isCurrentOperation(operation)) {
+      loading.value = false
+    }
   }
 }
 
-function saveRecord(submittedUrl: string, contentType?: string): void {
-  const input = { url: submittedUrl, name: name.value }
-  const saved = props.record
-    ? service.value.update(props.record.id, input, contentType)
-    : service.value.add(input, contentType)
+function saveRecord(
+  submittedService: DirectLinkService,
+  submittedRecordId: string | undefined,
+  submittedUrl: string,
+  submittedName: string,
+  contentType?: string
+): void {
+  const input = { url: submittedUrl, name: submittedName }
+  const saved = submittedRecordId
+    ? submittedService.update(submittedRecordId, input, contentType)
+    : submittedService.add(input, contentType)
   finishSave(saved)
 }
 
@@ -149,6 +205,10 @@ function requestDelete(): void {
     return
   }
 
+  const operation = ++operationGeneration
+  const submittedService = service.value
+  let settled = false
+
   uni.showModal({
     title: '删除媒体直链',
     content: '确认删除这条媒体直链？此操作不会删除网络上的文件。',
@@ -156,12 +216,17 @@ function requestDelete(): void {
     confirmColor: '#c44732',
     cancelText: '取消',
     success: ({ confirm }) => {
+      if (settled || !isCurrentOperation(operation)) {
+        return
+      }
+      settled = true
+
       if (!confirm) {
         return
       }
 
       try {
-        service.value.remove(record.id)
+        submittedService.remove(record.id)
         emit('deleted', record.id)
         emit('close')
       } catch {
@@ -172,9 +237,23 @@ function requestDelete(): void {
 }
 
 function close(): void {
-  if (!loading.value) {
-    emit('close')
-  }
+  invalidateOperation()
+  emit('close')
+}
+
+function beginOperation(): number {
+  const operation = ++operationGeneration
+  loading.value = true
+  return operation
+}
+
+function invalidateOperation(): void {
+  operationGeneration += 1
+  loading.value = false
+}
+
+function isCurrentOperation(operation: number): boolean {
+  return !disposed && operation === operationGeneration
 }
 
 function probeDirectMedia(candidateUrl: string): Promise<string | undefined> {
@@ -234,7 +313,6 @@ function readContentType(headers: unknown): string | undefined {
           class="direct-link-sheet__icon-button"
           aria-label="关闭导入面板"
           title="关闭"
-          :disabled="loading"
           @click="close"
         >
           <X :size="21" aria-hidden="true" />
@@ -251,7 +329,6 @@ function readContentType(headers: unknown): string | undefined {
           autocorrect="off"
           autocapitalize="off"
           :spellcheck="false"
-          :disabled="loading"
           placeholder="https://.../video.mp4"
         />
       </label>

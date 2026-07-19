@@ -21,7 +21,10 @@ import {
   PROGRESS_STORAGE_KEY,
   ProgressRepository
 } from '@/features/playback/progressRepository'
-import { createMemoryStorage } from '@/infrastructure/storage'
+import {
+  createMemoryStorage,
+  type KeyValueStorage
+} from '@/infrastructure/storage'
 import {
   bootstrapMocks,
   type BootstrapMocksOptions
@@ -546,6 +549,44 @@ describe('app store sync state transitions', () => {
 })
 
 describe('app store derived catalog', () => {
+  it('reuses a pre-normalized search index when only the query changes', () => {
+    const context = createTestContext('getters-search-index')
+    const videos = [
+      baiduVideo('1', NOW),
+      baiduVideo('2', NOW - 1)
+    ]
+    const catalogStrings = new Set(
+      videos.flatMap((video) => [video.name, video.path])
+    )
+    const original = String.prototype.toLocaleLowerCase
+    let catalogNormalizations = 0
+    vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(
+      function (this: string, locales?: Intl.LocalesArgument) {
+        const value = String(this)
+        if (catalogStrings.has(value)) {
+          catalogNormalizations += 1
+        }
+        return original.call(value, locales)
+      }
+    )
+    context.store.baiduVideos = videos
+
+    context.store.searchQuery = '视频1'
+    expect(context.store.searchResults).toHaveLength(1)
+    expect(catalogNormalizations).toBe(4)
+
+    context.store.searchQuery = '视频2'
+    expect(context.store.searchResults).toHaveLength(1)
+    expect(catalogNormalizations).toBe(4)
+
+    const thirdVideo = baiduVideo('3', NOW - 2)
+    catalogStrings.add(thirdVideo.name)
+    catalogStrings.add(thirdVideo.path)
+    context.store.baiduVideos = [...videos, thirdVideo]
+    expect(context.store.searchResults).toHaveLength(1)
+    expect(catalogNormalizations).toBe(10)
+  })
+
   it('never exposes a tampered cached video outside the configured Baidu root', async () => {
     const context = createTestContext('getters-tampered-cache')
     const outside = {
@@ -757,7 +798,7 @@ describe('app store local reload and clear actions', () => {
     context.cache.saveSuccessful([baiduVideo('1', NOW)])
     await context.store.initialize()
 
-    context.store.disconnectBaidu()
+    expect(context.store.disconnectBaidu()).toBe(true)
 
     expect(context.store.authSession).toBeNull()
     expect(context.store.baiduVideos).toHaveLength(1)
@@ -776,7 +817,7 @@ describe('app store local reload and clear actions', () => {
     context.cache.saveSuccessful([baiduVideo('1', NOW)])
     await context.store.initialize()
 
-    context.store.clearCatalogCache()
+    expect(context.store.clearCatalogCache()).toBe(true)
 
     expect(context.store.baiduVideos).toEqual([])
     expect(context.store.baiduCacheSavedAt).toBeNull()
@@ -784,11 +825,65 @@ describe('app store local reload and clear actions', () => {
     expect(context.store.directRecords).toHaveLength(1)
     expect(context.store.progressHistory).toHaveLength(1)
 
-    context.store.clearProgress()
+    expect(context.store.clearProgress()).toBe(true)
 
     expect(context.store.progressHistory).toEqual([])
     expect(context.store.resumableProgress).toEqual([])
     expect(context.store.authSession).not.toBeNull()
+    expect(context.store.directRecords).toHaveLength(1)
+  })
+
+  it('returns false and preserves every domain when auth persistence removal fails', async () => {
+    const context = createFailingRemovalContext(
+      'actions-disconnect-failure',
+      AUTH_STORAGE_KEY
+    )
+    await context.store.initialize()
+
+    expect(context.store.disconnectBaidu()).toBe(false)
+
+    expect(context.store.authSession).toEqual(validSession())
+    expect(context.authRepository.getValidSession(NOW)).toEqual(validSession())
+    expectUnrelatedSlicesPreserved(context)
+  })
+
+  it('returns false and preserves every domain when cache persistence removal fails', async () => {
+    const context = createFailingRemovalContext(
+      'actions-cache-failure',
+      CATALOG_CACHE_KEY
+    )
+    await context.store.initialize()
+    const previousVideos = context.store.baiduVideos.map((video) => ({ ...video }))
+    const previousSavedAt = context.store.baiduCacheSavedAt
+
+    expect(context.store.clearCatalogCache()).toBe(false)
+
+    expect(context.store.baiduVideos).toEqual(previousVideos)
+    expect(context.store.baiduCacheSavedAt).toBe(previousSavedAt)
+    expect(context.cache.load()).toMatchObject({
+      videos: previousVideos,
+      savedAt: previousSavedAt
+    })
+    expect(context.store.authSession).toEqual(validSession())
+    expect(context.store.directRecords).toHaveLength(1)
+    expect(context.store.progressHistory).toHaveLength(1)
+  })
+
+  it('returns false and preserves every domain when progress persistence removal fails', async () => {
+    const context = createFailingRemovalContext(
+      'actions-progress-failure',
+      PROGRESS_STORAGE_KEY
+    )
+    await context.store.initialize()
+    const previousHistory = context.store.progressHistory.map((item) => ({ ...item }))
+
+    expect(context.store.clearProgress()).toBe(false)
+
+    expect(context.store.progressHistory).toEqual(previousHistory)
+    expect(context.store.resumableProgress).toEqual(previousHistory)
+    expect(context.progressRepository.listHistory()).toEqual(previousHistory)
+    expect(context.store.authSession).toEqual(validSession())
+    expect(context.store.baiduVideos).toHaveLength(1)
     expect(context.store.directRecords).toHaveLength(1)
   })
 })
@@ -1233,6 +1328,69 @@ function createTestContext(
     },
     store
   }
+}
+
+function createFailingRemovalContext(
+  storeId: string,
+  failingKey: string
+) {
+  const backingStorage = createMemoryStorage()
+  let failRemoval = false
+  const storage: KeyValueStorage = {
+    read: <T>(key: string, fallback: T): T =>
+      backingStorage.read(key, fallback),
+    write: <T>(key: string, value: T): void =>
+      backingStorage.write(key, value),
+    remove: (key: string): void => {
+      if (failRemoval && key === failingKey) {
+        throw new Error(`sentinel-remove-failure:${key}`)
+      }
+      backingStorage.remove(key)
+    }
+  }
+  const authRepository = new AuthRepository(storage)
+  const directLinkService = new DirectLinkService(storage, { now: () => NOW })
+  const progressRepository = new ProgressRepository(storage)
+  const cache = new CatalogCache(storage, {
+    root: CONFIG.baiduRoot,
+    now: () => NOW
+  })
+  authRepository.saveSession(validSession())
+  directLinkService.add({
+    name: '保留的直播',
+    url: 'https://media.example/preserved.m3u8'
+  })
+  progressRepository.save('baidu:1', 120, 600, NOW)
+  cache.saveSuccessful([baiduVideo('1', NOW)])
+  failRemoval = true
+  const useStore = createAppStore(`test:${storeId}`, {
+    authRepository,
+    directLinkService,
+    progressRepository,
+    catalogCache: cache,
+    baiduDriveSource: { listPage: vi.fn().mockResolvedValue([]) },
+    config: CONFIG,
+    now: () => NOW
+  })
+
+  return {
+    store: useStore(createPinia()),
+    authRepository,
+    directLinkService,
+    progressRepository,
+    cache
+  }
+}
+
+function expectUnrelatedSlicesPreserved(
+  context: ReturnType<typeof createFailingRemovalContext>
+): void {
+  expect(context.store.baiduVideos).toHaveLength(1)
+  expect(context.store.directRecords).toHaveLength(1)
+  expect(context.store.progressHistory).toHaveLength(1)
+  expect(context.cache.load()?.videos).toHaveLength(1)
+  expect(context.directLinkService.list()).toHaveLength(1)
+  expect(context.progressRepository.listHistory()).toHaveLength(1)
 }
 
 function setStaleSyncError(context: TestContext): void {

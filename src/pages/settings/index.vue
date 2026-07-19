@@ -14,7 +14,7 @@ import BottomNav from '@/components/BottomNav.vue'
 import { runtimeConfig } from '@/config/runtime'
 import { useAppStore } from '@/stores/appStore'
 
-const APP_VERSION = '1.0.0'
+const appVersion = __PIANKE_APP_VERSION__
 const store = useAppStore()
 
 const connectionStatus = computed(() =>
@@ -36,6 +36,7 @@ function connectBaidu(): void {
 }
 
 function requestDisconnect(): void {
+  let settled = false
   uni.showModal({
     title: '断开百度网盘',
     content: '将删除本机保存的百度授权，直链、目录缓存和播放历史会保留。',
@@ -43,17 +44,26 @@ function requestDisconnect(): void {
     confirmColor: '#c44732',
     cancelText: '取消',
     success: ({ confirm }) => {
+      if (settled) {
+        return
+      }
+      settled = true
+
       if (!confirm) {
         return
       }
 
-      store.disconnectBaidu()
-      uni.showToast({ title: '已断开百度网盘', icon: 'none' })
+      showDestructiveResult(
+        () => store.disconnectBaidu(),
+        '已断开百度网盘',
+        '断开失败，请稍后重试'
+      )
     }
   })
 }
 
 function requestClearCache(): void {
+  let settled = false
   uni.showModal({
     title: '清除目录缓存',
     content: '只清除已同步到本机的百度视频目录，不会断开授权或删除播放历史。',
@@ -61,17 +71,26 @@ function requestClearCache(): void {
     confirmColor: '#c44732',
     cancelText: '取消',
     success: ({ confirm }) => {
+      if (settled) {
+        return
+      }
+      settled = true
+
       if (!confirm) {
         return
       }
 
-      store.clearCatalogCache()
-      uni.showToast({ title: '目录缓存已清除', icon: 'none' })
+      showDestructiveResult(
+        () => store.clearCatalogCache(),
+        '目录缓存已清除',
+        '目录缓存清除失败，请稍后重试'
+      )
     }
   })
 }
 
 function requestClearHistory(): void {
+  let settled = false
   uni.showModal({
     title: '清除播放历史',
     content: '将永久删除本机保存的全部播放位置和续播记录。',
@@ -79,6 +98,11 @@ function requestClearHistory(): void {
     confirmColor: '#c44732',
     cancelText: '取消',
     success: ({ confirm }) => {
+      if (settled) {
+        return
+      }
+      settled = true
+
       if (confirm) {
         requestSecondHistoryConfirmation()
       }
@@ -87,6 +111,7 @@ function requestClearHistory(): void {
 }
 
 function requestSecondHistoryConfirmation(): void {
+  let settled = false
   uni.showModal({
     title: '再次确认清除',
     content: '播放历史清除后无法恢复。确认永久清除？',
@@ -94,13 +119,39 @@ function requestSecondHistoryConfirmation(): void {
     confirmColor: '#c44732',
     cancelText: '取消',
     success: ({ confirm }) => {
+      if (settled) {
+        return
+      }
+      settled = true
+
       if (!confirm) {
         return
       }
 
-      store.clearProgress()
-      uni.showToast({ title: '播放历史已清除', icon: 'none' })
+      showDestructiveResult(
+        () => store.clearProgress(),
+        '播放历史已清除',
+        '播放历史清除失败，请稍后重试'
+      )
     }
+  })
+}
+
+function showDestructiveResult(
+  action: () => boolean,
+  successTitle: string,
+  failureTitle: string
+): void {
+  let succeeded = false
+  try {
+    succeeded = action()
+  } catch {
+    succeeded = false
+  }
+
+  uni.showToast({
+    title: succeeded ? successTitle : failureTitle,
+    icon: 'none'
   })
 }
 
@@ -242,7 +293,7 @@ function formatDateTime(value: number): string {
 
       <view class="settings-version" aria-label="应用版本">
         <text>片刻</text>
-        <text>版本 {{ APP_VERSION }}</text>
+        <text>版本 {{ appVersion }}</text>
       </view>
     </main>
 

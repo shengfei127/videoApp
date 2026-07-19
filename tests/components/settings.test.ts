@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +11,19 @@ import { useAppStore } from '@/stores/appStore'
 describe('Settings page', () => {
   beforeEach(() => {
     vi.mocked(uni.showModal).mockReset()
+    vi.mocked(uni.showToast).mockReset()
+  })
+
+  it('renders the build-injected application version without a page literal', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/pages/settings/index.vue'),
+      'utf8'
+    )
+    const { wrapper } = mountSettings()
+
+    expect(source).toContain('__PIANKE_APP_VERSION__')
+    expect(source).not.toMatch(/APP_VERSION\s*=\s*['"]\d/u)
+    expect(wrapper.text()).toContain('版本 1.0.0')
   })
 
   it('shows source metadata and privacy state without rendering credentials or URLs', () => {
@@ -147,6 +163,100 @@ describe('Settings page', () => {
     expect(store.authSession).not.toBeNull()
     expect(store.baiduVideos).toHaveLength(1)
     expect(store.progressHistory).toHaveLength(1)
+  })
+
+  it.each([
+    [
+      'disconnect',
+      '[data-testid="settings-disconnect"]',
+      '断开失败，请稍后重试',
+      '已断开百度网盘'
+    ],
+    [
+      'cache',
+      '[data-testid="settings-clear-cache"]',
+      '目录缓存清除失败，请稍后重试',
+      '目录缓存已清除'
+    ],
+    [
+      'history',
+      '[data-testid="settings-clear-history"]',
+      '播放历史清除失败，请稍后重试',
+      '播放历史已清除'
+    ]
+  ] as const)(
+    'shows only a safe failure toast when %s persistence fails',
+    async (action, selector, failureTitle, successTitle) => {
+      confirmEveryModal()
+      const { store, wrapper } = mountSettings(seedAllSlices)
+      const actionMock = vi.fn(() => false)
+      if (action === 'disconnect') {
+        store.disconnectBaidu = actionMock
+      } else if (action === 'cache') {
+        store.clearCatalogCache = actionMock
+      } else {
+        store.clearProgress = actionMock
+      }
+
+      await wrapper.get(selector).trigger('click')
+
+      expect(actionMock).toHaveBeenCalledOnce()
+      expect(uni.showToast).toHaveBeenCalledWith({
+        title: failureTitle,
+        icon: 'none'
+      })
+      expect(vi.mocked(uni.showToast).mock.calls).not.toContainEqual([
+        expect.objectContaining({ title: successTitle })
+      ])
+    }
+  )
+
+  it.each([
+    ['disconnectBaidu', '[data-testid="settings-disconnect"]'],
+    ['clearCatalogCache', '[data-testid="settings-clear-cache"]']
+  ] as const)(
+    'runs %s only once when a system modal repeats its callback',
+    async (action, selector) => {
+      let callback: ((result: UniApp.ShowModalRes) => void) | undefined
+      vi.mocked(uni.showModal).mockImplementation((options) => {
+        callback = options?.success
+        return undefined as never
+      })
+      const { store, wrapper } = mountSettings(seedAllSlices)
+      const actionMock = vi.fn(() => true)
+      store[action] = actionMock
+
+      await wrapper.get(selector).trigger('click')
+      callback?.({ confirm: true, cancel: false })
+      callback?.({ confirm: true, cancel: false })
+
+      expect(actionMock).toHaveBeenCalledOnce()
+      expect(uni.showToast).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('guards both history confirmations against repeated callbacks', async () => {
+    const callbacks: Array<(result: UniApp.ShowModalRes) => void> = []
+    vi.mocked(uni.showModal).mockImplementation((options) => {
+      if (options?.success) {
+        callbacks.push(options.success)
+      }
+      return undefined as never
+    })
+    const { store, wrapper } = mountSettings(seedAllSlices)
+    const clearProgress = vi.fn(() => true)
+    store.clearProgress = clearProgress
+
+    await wrapper.get('[data-testid="settings-clear-history"]').trigger('click')
+    callbacks[0]?.({ confirm: true, cancel: false })
+    callbacks[0]?.({ confirm: true, cancel: false })
+    expect(uni.showModal).toHaveBeenCalledTimes(2)
+
+    callbacks[1]?.({ confirm: true, cancel: false })
+    callbacks[1]?.({ confirm: true, cancel: false })
+
+    expect(clearProgress).toHaveBeenCalledOnce()
+    expect(uni.showToast).toHaveBeenCalledTimes(1)
   })
 })
 

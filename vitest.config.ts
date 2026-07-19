@@ -1,9 +1,13 @@
 import { fileURLToPath } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
+import packageMetadata from './package.json'
 
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    __PIANKE_APP_VERSION__: JSON.stringify(packageMetadata.version)
+  },
   test: {
     environment: 'happy-dom',
     globals: true,

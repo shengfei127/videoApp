@@ -55,6 +55,11 @@ export interface ContinueWatchingItem {
   readonly progress: PlaybackProgress
 }
 
+interface CatalogSearchEntry {
+  readonly video: VideoItem
+  readonly haystack: string
+}
+
 export type SyncBaiduResult =
   | {
       ok: true
@@ -135,8 +140,16 @@ export function createAppStore(
       ...baiduVideos.value.map((video) => ({ ...video })),
       ...directRecords.value.map(normalizeDirectVideo)
     ])
+    const searchIndex = computed<CatalogSearchEntry[]>(() =>
+      [...mergedVideos.value]
+        .sort(compareRecentVideos)
+        .map((video) => ({
+          video,
+          haystack: `${video.name.toLocaleLowerCase('zh-CN')}\n${video.path.toLocaleLowerCase('zh-CN')}`
+        }))
+    )
     const recentVideos = computed<VideoItem[]>(() =>
-      [...mergedVideos.value].sort(compareRecentVideos)
+      searchIndex.value.map(({ video }) => ({ ...video }))
     )
     const continueWatching = computed<ContinueWatchingItem[]>(() => {
       const videosById = new Map(
@@ -165,11 +178,9 @@ export function createAppStore(
         return recentVideos.value
       }
 
-      return recentVideos.value.filter(
-        (video) =>
-          video.name.toLocaleLowerCase('zh-CN').includes(query) ||
-          video.path.toLocaleLowerCase('zh-CN').includes(query)
-      )
+      return searchIndex.value
+        .filter(({ haystack }) => haystack.includes(query))
+        .map(({ video }) => ({ ...video }))
     })
     const folderTree = computed(() =>
       buildFolderTree(dependencies.config.baiduRoot, baiduVideos.value)
@@ -452,17 +463,19 @@ export function createAppStore(
       return progressHistory.value.map((progress) => ({ ...progress }))
     }
 
-    function disconnectBaidu(): void {
+    function disconnectBaidu(): boolean {
       try {
         dependencies.authRepository.clearSession()
         authSession.value = null
         transitionSync({ state: 'idle' })
+        return true
       } catch {
         lastError.value = safeError('initialization')
+        return false
       }
     }
 
-    function clearCatalogCache(): void {
+    function clearCatalogCache(): boolean {
       try {
         dependencies.catalogCache.clear()
         baiduVideos.value = []
@@ -470,18 +483,22 @@ export function createAppStore(
         lastSyncStartedAt.value = null
         nextSyncAllowedAt.value = null
         transitionSync({ state: 'idle' })
+        return true
       } catch {
         lastError.value = safeError('initialization')
+        return false
       }
     }
 
-    function clearProgress(): void {
+    function clearProgress(): boolean {
       try {
         dependencies.progressRepository.clear()
         progressHistory.value = []
         resumableProgress.value = []
+        return true
       } catch {
         lastError.value = safeError('initialization')
+        return false
       }
     }
 

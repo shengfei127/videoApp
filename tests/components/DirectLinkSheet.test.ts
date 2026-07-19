@@ -159,6 +159,146 @@ describe('DirectLinkSheet', () => {
     expect(wrapper.find('[data-testid="direct-force"]').exists()).toBe(true)
   })
 
+  it('invalidates a pending probe when closed and reopened with the same URL', async () => {
+    const pending = deferred<string | undefined>()
+    const { wrapper, service } = mountSheet({
+      probe: vi.fn(() => pending.promise)
+    })
+    const candidate = 'https://cdn.example.test/same-stream'
+
+    await wrapper.get('[data-testid="direct-url"]').setValue(candidate)
+    void wrapper.get('[data-testid="direct-save"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({ open: false })
+    await wrapper.setProps({ open: true })
+    await wrapper.get('[data-testid="direct-url"]').setValue(candidate)
+
+    pending.resolve('video/mp4')
+    await flushPromises()
+
+    expect(service.list()).toEqual([])
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="direct-save"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('invalidates a pending probe when switching records that share a URL', async () => {
+    const randomUUID = vi
+      .fn()
+      .mockReturnValueOnce('record-1')
+      .mockReturnValueOnce('record-2')
+    vi.stubGlobal('crypto', { randomUUID })
+    const service = new DirectLinkService(createMemoryStorage(), { now: () => 1000 })
+    const sharedUrl = 'https://cdn.example.test/shared-stream'
+    const first = service.add({ url: sharedUrl, name: 'First' }, 'video/mp4')
+    const second = service.add({ url: sharedUrl, name: 'Second' }, 'video/mp4')
+    const pending = deferred<string | undefined>()
+    const wrapper = mount(DirectLinkSheet, {
+      props: {
+        open: true,
+        service,
+        record: first,
+        probe: vi.fn(() => pending.promise)
+      }
+    })
+
+    await wrapper.get('[data-testid="direct-name"]').setValue('Stale edit')
+    void wrapper.get('[data-testid="direct-save"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({ record: second })
+    pending.resolve('video/mp4')
+    await flushPromises()
+
+    expect(service.list().map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: 'record-1', name: 'First' },
+      { id: 'record-2', name: 'Second' }
+    ])
+    expect(wrapper.emitted('saved')).toBeUndefined()
+  })
+
+  it('keeps the newer probe loading and ignores out-of-order older resolution', async () => {
+    const first = deferred<string | undefined>()
+    const second = deferred<string | undefined>()
+    const probe = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const { wrapper, service } = mountSheet({ probe })
+
+    await wrapper.get('[data-testid="direct-url"]').setValue(
+      'https://cdn.example.test/first-stream'
+    )
+    void wrapper.get('[data-testid="direct-save"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="direct-url"]').setValue(
+      'https://cdn.example.test/second-stream'
+    )
+    await wrapper.get('[data-testid="direct-save"]').trigger('click')
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    first.resolve('video/mp4')
+    await flushPromises()
+
+    expect(service.list()).toEqual([])
+    expect(wrapper.get('[data-testid="direct-save"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="direct-save"]').text()).toContain('正在验证')
+
+    second.resolve('application/x-mpegurl')
+    await flushPromises()
+
+    expect(service.list()).toMatchObject([
+      {
+        url: 'https://cdn.example.test/second-stream',
+        mediaKind: 'hls'
+      }
+    ])
+  })
+
+  it('invalidates a pending probe when the service instance changes', async () => {
+    const pending = deferred<string | undefined>()
+    const firstService = new DirectLinkService(createMemoryStorage(), { now: () => 1000 })
+    const secondService = new DirectLinkService(createMemoryStorage(), { now: () => 1000 })
+    const wrapper = mount(DirectLinkSheet, {
+      props: {
+        open: true,
+        service: firstService,
+        probe: vi.fn(() => pending.promise)
+      }
+    })
+
+    await wrapper.get('[data-testid="direct-url"]').setValue(
+      'https://cdn.example.test/service-stream'
+    )
+    void wrapper.get('[data-testid="direct-save"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({ service: secondService })
+    pending.resolve('video/mp4')
+    await flushPromises()
+
+    expect(firstService.list()).toEqual([])
+    expect(secondService.list()).toEqual([])
+    expect(wrapper.emitted('saved')).toBeUndefined()
+  })
+
+  it('does not save or emit after unmounting while a probe is pending', async () => {
+    const pending = deferred<string | undefined>()
+    const { wrapper, service } = mountSheet({
+      probe: vi.fn(() => pending.promise)
+    })
+
+    await wrapper.get('[data-testid="direct-url"]').setValue(
+      'https://cdn.example.test/unmounted-stream'
+    )
+    void wrapper.get('[data-testid="direct-save"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+    pending.resolve('video/mp4')
+    await flushPromises()
+
+    expect(service.list()).toEqual([])
+    expect(wrapper.emitted('saved')).toBeUndefined()
+  })
+
   it('edits a record while preserving its ID and original addedAt', async () => {
     const storage = createMemoryStorage()
     const service = new DirectLinkService(storage, { now: () => 1000 })

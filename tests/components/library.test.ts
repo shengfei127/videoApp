@@ -47,7 +47,8 @@ describe('Library page', () => {
   })
 
   it('filters only the local catalog by name or path without a provider request', async () => {
-    const { wrapper } = mountLibrary((store) => {
+    vi.useFakeTimers()
+    const { store, wrapper } = mountLibrary((store) => {
       store.baiduVideos = [
         video('1', '海边日记.mp4', '/apps/片刻/旅行/海边日记.mp4', 300),
         video('2', '城市漫步.mp4', '/apps/片刻/travel/城市漫步.mp4', 200),
@@ -57,17 +58,24 @@ describe('Library page', () => {
     const search = wrapper.get('[data-testid="library-search"]')
 
     await search.setValue('海边')
+    expect(store.searchQuery).toBe('')
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
     expect(wrapper.findAllComponents(VideoRow).map((row) => row.props('video').id)).toEqual([
       'baidu:1'
     ])
 
     await search.setValue('travel')
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
     expect(wrapper.findAllComponents(VideoRow).map((row) => row.props('video').id)).toEqual([
       'baidu:2'
     ])
     expect(uni.request).not.toHaveBeenCalled()
 
     await search.setValue('不存在')
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
     expect(wrapper.findAllComponents(VideoRow)).toHaveLength(0)
     expect(wrapper.get('[data-testid="library-empty-search"]').text()).toBe(
       '没有找到匹配的视频'
@@ -75,6 +83,98 @@ describe('Library page', () => {
     expect(wrapper.get('[data-testid="library-empty-search"]').classes()).toContain(
       'library-empty-band'
     )
+  })
+
+  it('renders recent videos in batches of 50 and loads more explicitly', async () => {
+    const { wrapper } = mountLibrary((store) => {
+      store.baiduVideos = Array.from({ length: 120 }, (_, index) =>
+        video(
+          String(index + 1),
+          `最近视频 ${index + 1}.mp4`,
+          `/apps/片刻/最近视频 ${index + 1}.mp4`,
+          1_000 - index
+        )
+      )
+    })
+
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
+    const loadMore = wrapper.get('[data-testid="library-load-more"]')
+    expect(loadMore.text()).toContain('加载更多')
+
+    await loadMore.trigger('click')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(100)
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(120)
+    expect(wrapper.find('[data-testid="library-load-more"]').exists()).toBe(false)
+  })
+
+  it('limits current-folder videos and resets the batch when navigating folders', async () => {
+    const { wrapper } = mountLibrary((store) => {
+      store.baiduVideos = Array.from({ length: 120 }, (_, index) =>
+        video(
+          String(index + 1),
+          `课程 ${index + 1}.mp4`,
+          `/apps/片刻/课程/课程 ${index + 1}.mp4`,
+          1_000 - index
+        )
+      )
+    })
+    await wrapper.findAll('button.library-segment__button')[1]!.trigger('click')
+    await wrapper.get('[data-testid="folder-row"]').trigger('click')
+
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(100)
+
+    await wrapper.findAll('[data-testid="breadcrumb"]')[0]!.trigger('click')
+    await wrapper.get('[data-testid="folder-row"]').trigger('click')
+
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
+  })
+
+  it('debounces search, resets its batch immediately, and loads matching results in batches', async () => {
+    vi.useFakeTimers()
+    const { store, wrapper } = mountLibrary((appStore) => {
+      appStore.baiduVideos = Array.from({ length: 120 }, (_, index) =>
+        video(
+          String(index + 1),
+          `${index < 80 ? '目标' : '其他'} ${index + 1}.mp4`,
+          `/apps/片刻/批量/${index + 1}.mp4`,
+          1_000 - index
+        )
+      )
+    })
+    const search = wrapper.get('[data-testid="library-search"]')
+
+    await search.setValue('目标')
+    expect(store.searchQuery).toBe('')
+    await vi.advanceTimersByTimeAsync(199)
+    expect(store.searchQuery).toBe('')
+    await vi.advanceTimersByTimeAsync(1)
+    await wrapper.vm.$nextTick()
+
+    expect(store.searchQuery).toBe('目标')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
+    await wrapper.get('[data-testid="library-load-more"]').trigger('click')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(80)
+
+    await search.setValue('其他')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(50)
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
+    expect(store.searchQuery).toBe('其他')
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(40)
+  })
+
+  it('cancels a pending debounced search when unmounted', async () => {
+    vi.useFakeTimers()
+    const { store, wrapper } = mountLibrary()
+
+    await wrapper.get('[data-testid="library-search"]').setValue('不会提交')
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(store.searchQuery).toBe('')
   })
 
   it('traverses the reconstructed folder tree and returns through breadcrumbs', async () => {

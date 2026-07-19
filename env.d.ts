@@ -14,6 +14,7 @@ interface ImportMeta {
 declare const __PIANKE_UNI_PLATFORM__: string
 declare const __PIANKE_BUILD_MODE__: string
 declare const __PIANKE_DEV_SERVER__: boolean
+declare const __PIANKE_APP_VERSION__: string
 
 declare const plus: {
   webview: {

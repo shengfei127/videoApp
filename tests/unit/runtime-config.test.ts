@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { transform } from 'esbuild'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -15,7 +18,12 @@ describe('parseRuntimeConfig', () => {
   ] as const)(
     'transforms H5 %s constants into browser literals for %s mode',
     async (command, mode, expectedDevServer) => {
-      const define = createPiankeBuildDefines('h5', mode, command)
+      const define = createPiankeBuildDefines(
+        'h5',
+        mode,
+        command,
+        '1.2.3-test.1'
+      )
       const transformed = await transform(
         `
           globalThis.__PIANKE_TRANSFORM_RESULT__ = {
@@ -27,6 +35,9 @@ describe('parseRuntimeConfig', () => {
               : undefined,
             devServer: typeof __PIANKE_DEV_SERVER__ !== 'undefined'
               ? __PIANKE_DEV_SERVER__
+              : undefined,
+            appVersion: typeof __PIANKE_APP_VERSION__ !== 'undefined'
+              ? __PIANKE_APP_VERSION__
               : undefined
           }
         `,
@@ -36,7 +47,8 @@ describe('parseRuntimeConfig', () => {
       expect(define).toEqual({
         __PIANKE_UNI_PLATFORM__: JSON.stringify('h5'),
         __PIANKE_BUILD_MODE__: JSON.stringify(mode),
-        __PIANKE_DEV_SERVER__: JSON.stringify(expectedDevServer)
+        __PIANKE_DEV_SERVER__: JSON.stringify(expectedDevServer),
+        __PIANKE_APP_VERSION__: JSON.stringify('1.2.3-test.1')
       })
       Function(transformed.code)()
       expect(
@@ -44,15 +56,31 @@ describe('parseRuntimeConfig', () => {
       ).toEqual({
         platform: 'h5',
         mode,
-        devServer: expectedDevServer
+        devServer: expectedDevServer,
+        appVersion: '1.2.3-test.1'
       })
       delete (globalThis as Record<string, unknown>).__PIANKE_TRANSFORM_RESULT__
       expect(transformed.code).not.toContain('__PIANKE_UNI_PLATFORM__')
       expect(transformed.code).not.toContain('__PIANKE_BUILD_MODE__')
       expect(transformed.code).not.toContain('__PIANKE_DEV_SERVER__')
+      expect(transformed.code).not.toContain('__PIANKE_APP_VERSION__')
       expect(transformed.code).not.toContain('typeof process')
     }
   )
+
+  it('rejects an empty application version at build-define creation', () => {
+    expect(() =>
+      createPiankeBuildDefines('h5', 'production', 'build', '   ')
+    ).toThrow('version')
+  })
+
+  it('reads only package metadata version in the Vite configuration', () => {
+    const source = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8')
+
+    expect(source).toContain("from './package.json'")
+    expect(source).toContain('packageMetadata.version')
+    expect(source).not.toContain('__PIANKE_PACKAGE_JSON__')
+  })
 
   it('reads browser compile constants without depending on a runtime process global', () => {
     const previousPlatform = process.env.UNI_PLATFORM
