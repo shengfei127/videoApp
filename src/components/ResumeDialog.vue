@@ -29,7 +29,12 @@ const visible = computed(() => {
 const savedPosition = computed(() =>
   formatDuration(props.progress?.positionSeconds ?? 0)
 )
-const continueButton = ref<HTMLButtonElement | null>(null)
+interface FocusableTarget {
+  focus?: () => void
+  $el?: { focus?: () => void }
+}
+
+const continueButton = ref<FocusableTarget | null>(null)
 
 watch(
   visible,
@@ -39,10 +44,20 @@ watch(
     }
 
     await nextTick()
-    continueButton.value?.focus()
+    focusContinueButton()
   },
   { immediate: true }
 )
+
+function focusContinueButton(): void {
+  const target = continueButton.value
+  const focusable =
+    typeof target?.focus === 'function' ? target : target?.$el
+
+  if (typeof focusable?.focus === 'function') {
+    focusable.focus()
+  }
+}
 
 function formatDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds))
@@ -68,6 +83,7 @@ function formatDuration(totalSeconds: number): string {
         <button
           ref="continueButton"
           type="button"
+          tabindex="0"
           data-testid="resume-continue"
           class="resume-dialog__action resume-dialog__action--primary"
           @click="emit('continue')"
@@ -77,6 +93,7 @@ function formatDuration(totalSeconds: number): string {
         </button>
         <button
           type="button"
+          tabindex="0"
           data-testid="resume-restart"
           class="resume-dialog__action resume-dialog__action--secondary"
           @click="emit('restart')"

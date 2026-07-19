@@ -127,6 +127,61 @@ describe('Baidu public errors', () => {
 })
 
 describe('Baidu uni.request transport', () => {
+  it('omits the browser-forbidden User-Agent from the default H5 adapter', async () => {
+    vi.stubGlobal('__PIANKE_UNI_PLATFORM__', 'h5')
+    const request = vi.fn((options: {
+      success: (response: { statusCode: number; data: string }) => void
+    }) => {
+      options.success({
+        statusCode: 200,
+        data: '{"errno":0,"info":[]}'
+      })
+    })
+    Object.assign(uni, { request })
+
+    const pending = createBaiduTransport()({
+      method: 'videolist',
+      access_token: 'sentinel-h5-token',
+      parent_path: '/apps/片刻',
+      recursion: 1,
+      web: 1,
+      num: 1000,
+      page: 1
+    })
+
+    expect(request).toHaveBeenCalledOnce()
+    expect(request.mock.calls[0]![0]).not.toHaveProperty('header')
+    await expect(pending).resolves.toEqual({ errno: 0, info: [] })
+  })
+
+  it('keeps the required User-Agent in the default App adapter', async () => {
+    vi.stubGlobal('__PIANKE_UNI_PLATFORM__', 'app')
+    const request = vi.fn((options: {
+      success: (response: { statusCode: number; data: string }) => void
+    }) => {
+      options.success({
+        statusCode: 200,
+        data: '{"errno":0,"info":[]}'
+      })
+    })
+    Object.assign(uni, { request })
+
+    const pending = createBaiduTransport()({
+      method: 'videolist',
+      access_token: 'sentinel-app-token',
+      parent_path: '/apps/片刻',
+      recursion: 1,
+      web: 1,
+      num: 1000,
+      page: 1
+    })
+
+    expect(request.mock.calls[0]![0]).toMatchObject({
+      header: { 'User-Agent': 'pan.baidu.com' }
+    })
+    await expect(pending).resolves.toEqual({ errno: 0, info: [] })
+  })
+
   it('routes filemetas data to the fixed multimedia endpoint', async () => {
     const request = vi.fn()
     const transport = createBaiduTransport(request)

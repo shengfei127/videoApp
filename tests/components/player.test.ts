@@ -19,6 +19,7 @@ const pageMocks = vi.hoisted(() => ({
     baiduRedirectUri: 'https://localhost/pianke/oauth/baidu',
     useMocks: false
   },
+  platform: 'app',
   baiduRoots: [] as string[],
   resolvePlaybackUrl: vi.fn(),
   pendingDlinks: [] as Array<{
@@ -38,7 +39,10 @@ vi.mock('@dcloudio/uni-app', () => ({
   onHide: lifecycle.onHide,
   onUnload: lifecycle.onUnload
 }))
-vi.mock('@/config/runtime', () => ({ runtimeConfig: pageMocks.config }))
+vi.mock('@/config/runtime', () => ({
+  runtimeConfig: pageMocks.config,
+  readRuntimeBuildEnvironment: () => ({ uniPlatform: pageMocks.platform })
+}))
 vi.mock('@/features/baidu/baiduDriveSource', () => ({
   BaiduDriveSource: class {
     constructor(root: string) {
@@ -54,6 +58,7 @@ describe('Player page', () => {
     lifecycle.onLoad.mockReset()
     lifecycle.onHide.mockReset()
     lifecycle.onUnload.mockReset()
+    pageMocks.platform = 'app'
     pageMocks.resolvePlaybackUrl.mockReset()
     Object.values(pageMocks.videoContext).forEach((fn) => fn.mockReset())
     Object.assign(uni, {
@@ -150,6 +155,25 @@ describe('Player page', () => {
     await flushPromises()
     expect(pageMocks.resolvePlaybackUrl).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[role="alert"]').text()).toContain('无法刷新播放地址')
+  })
+
+  it('omits the browser-forbidden Baidu User-Agent header on H5', async () => {
+    pageMocks.platform = 'h5'
+    const video = baiduVideo()
+    pageMocks.resolvePlaybackUrl.mockResolvedValue(
+      'https://d.pcs.baidu.com/file/h5?access_token=private-h5'
+    )
+    const { wrapper } = mountPlayer((appStore) => {
+      appStore.baiduVideos = [video]
+      appStore.authSession = validSession()
+    })
+
+    await loadPlayer(video.id)
+    await flushPromises()
+
+    expect(
+      wrapper.get('[data-testid="player-video"]').attributes('header')
+    ).toBeUndefined()
   })
 
   it('does not retry a direct link after a 403 playback error', async () => {

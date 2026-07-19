@@ -1,3 +1,5 @@
+import { readRuntimeBuildEnvironment } from '@/config/runtime'
+
 import {
   toBaiduHttpError,
   toBaiduNetworkError,
@@ -174,7 +176,17 @@ export function requestBaiduJson(
 }
 
 function defaultUniRequest(options: UniRequestOptions): unknown {
-  return (uni.request as unknown as UniRequestAdapter)(options)
+  const platform = readRuntimeBuildEnvironment().uniPlatform
+  if (platform === 'app' || platform === 'app-plus') {
+    return (uni.request as unknown as UniRequestAdapter)(options)
+  }
+
+  const { header: _forbiddenBrowserHeader, ...browserOptions } = options
+  return (
+    uni.request as unknown as (
+      input: Omit<UniRequestOptions, 'header'>
+    ) => unknown
+  )(browserOptions)
 }
 
 function isAllowedEndpoint(value: unknown): value is BaiduEndpoint {

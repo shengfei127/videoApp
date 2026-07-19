@@ -75,9 +75,9 @@ function createMockBaiduVideos(): VideoItem[] {
       modifiedAt: 1_799_999_100_000
     },
     {
-      id: 'baidu:700000000000000002',
+      id: 'baidu:1001',
       sourceType: 'baidu',
-      sourceId: '700000000000000002',
+      sourceId: '1001',
       name: '第2站·海边.mp4',
       path: '/apps/片刻/旅行2/第2站·海边.mp4',
       sizeBytes: 1_258_291_200,
@@ -116,7 +116,7 @@ function createMockDirectRecords(): DirectVideoRecord[] {
 function createMockProgress(): PlaybackProgress[] {
   return [
     {
-      videoId: 'baidu:700000000000000002',
+      videoId: 'baidu:1001',
       positionSeconds: 386,
       durationSeconds: 1_560,
       updatedAt: 1_799_999_500_000,

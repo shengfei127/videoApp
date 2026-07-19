@@ -4,7 +4,10 @@ import { onHide, onLoad, onUnload } from '@dcloudio/uni-app'
 import { ArrowLeft, CircleAlert, Gauge, RefreshCw } from 'lucide-vue-next'
 
 import ResumeDialog from '@/components/ResumeDialog.vue'
-import { runtimeConfig } from '@/config/runtime'
+import {
+  readRuntimeBuildEnvironment,
+  runtimeConfig
+} from '@/config/runtime'
 import type { PlaybackProgress, VideoItem } from '@/domain/video'
 import { BaiduDriveSource } from '@/features/baidu/baiduDriveSource'
 import { BaiduError } from '@/features/baidu/baiduErrors'
@@ -59,6 +62,7 @@ const savedProgress = computed<PlaybackProgress | null>(() => {
   )
 })
 const playerHeader = computed(() =>
+  supportsPrivilegedPlayerHeaders() &&
   activeVideo.value?.sourceType === 'baidu'
     ? { 'User-Agent': 'pan.baidu.com' }
     : undefined
@@ -76,6 +80,11 @@ const unsupportedSource = computed(() =>
       ? '媒体直链文件'
       : ''
 )
+
+function supportsPrivilegedPlayerHeaders(): boolean {
+  const platform = readRuntimeBuildEnvironment().uniPlatform
+  return platform === 'app' || platform === 'app-plus'
+}
 
 onLoad((query) => {
   void loadFromQuery(query?.id)
