@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Play, RotateCcw } from 'lucide-vue-next'
 
 import type { PlaybackProgress } from '@/domain/video'
@@ -29,6 +29,16 @@ const visible = computed(() => {
 const savedPosition = computed(() =>
   formatDuration(props.progress?.positionSeconds ?? 0)
 )
+const continueButton = ref<HTMLButtonElement | null>(null)
+
+watch(visible, async (isVisible) => {
+  if (!isVisible) {
+    return
+  }
+
+  await nextTick()
+  continueButton.value?.focus()
+})
 
 function formatDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds))
@@ -52,6 +62,7 @@ function formatDuration(totalSeconds: number): string {
       </text>
       <view class="resume-dialog__actions">
         <button
+          ref="continueButton"
           type="button"
           data-testid="resume-continue"
           class="resume-dialog__action resume-dialog__action--primary"

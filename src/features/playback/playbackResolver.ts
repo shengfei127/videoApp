@@ -30,8 +30,19 @@ export interface BaiduPlaybackSource {
   ): Promise<string>
 }
 
+export interface PlaybackResolverOptions {
+  now?: () => number
+}
+
 export class PlaybackResolver {
-  constructor(private readonly baiduDriveSource: BaiduPlaybackSource) {}
+  private readonly now: () => number
+
+  constructor(
+    private readonly baiduDriveSource: BaiduPlaybackSource,
+    options: PlaybackResolverOptions = {}
+  ) {
+    this.now = options.now ?? Date.now
+  }
 
   async resolve(
     item: VideoItem | null | undefined,
@@ -52,7 +63,7 @@ export class PlaybackResolver {
       throw new PlaybackResolutionError('unsupported-source')
     }
 
-    if (!session || !session.accessToken.trim()) {
+    if (!isValidBaiduSession(session, this.now())) {
       throw new PlaybackResolutionError('authorization-required')
     }
 
@@ -68,6 +79,20 @@ export class PlaybackResolver {
   ): PlayerPlaybackLoad {
     return new PlayerPlaybackLoad(this, item, session)
   }
+}
+
+function isValidBaiduSession(
+  session: BaiduAuthSession | null | undefined,
+  now: number
+): session is BaiduAuthSession {
+  return Boolean(
+    session &&
+      session.accessToken.trim() &&
+      Number.isFinite(session.expiresAt) &&
+      session.expiresAt > now &&
+      session.scope.includes('basic') &&
+      session.scope.includes('netdisk')
+  )
 }
 
 export class PlayerPlaybackLoad {

@@ -134,4 +134,25 @@ describe('PlaybackResolver', () => {
       expect(JSON.stringify(error)).not.toContain('sentinel-private-token')
     }
   })
+
+  it.each([
+    ['expired', { ...session, expiresAt: 1_700_000_000_000 }],
+    ['missing basic scope', { ...session, scope: ['netdisk'] }],
+    ['missing netdisk scope', { ...session, scope: ['basic'] }]
+  ] as Array<[string, BaiduAuthSession]>)(
+    'rejects a %s Baidu session before resolving a dlink',
+    async (_case, invalidSession) => {
+      const resolvePlaybackUrl = vi.fn()
+      const resolver = new PlaybackResolver(
+        { resolvePlaybackUrl },
+        { now: () => 1_800_000_000_000 }
+      )
+
+      await expect(resolver.resolve(baiduVideo, invalidSession)).rejects.toMatchObject({
+        name: 'PlaybackResolutionError',
+        code: 'authorization-required'
+      })
+      expect(resolvePlaybackUrl).not.toHaveBeenCalled()
+    }
+  )
 })

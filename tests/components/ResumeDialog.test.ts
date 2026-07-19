@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
 
 import ResumeDialog from '@/components/ResumeDialog.vue'
 import type { PlaybackProgress } from '@/domain/video'
@@ -56,5 +56,27 @@ describe('ResumeDialog', () => {
       }
     })
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('moves focus to continue only after a resumable dialog opens', async () => {
+    const wrapper = mount(ResumeDialog, {
+      props: { open: false, progress: resumable },
+      attachTo: document.body
+    })
+    const focus = vi.spyOn(HTMLButtonElement.prototype, 'focus')
+
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(focus).toHaveBeenCalledOnce()
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-testid="resume-continue"]').element
+    )
+
+    focus.mockClear()
+    await wrapper.setProps({ open: false })
+    await flushPromises()
+    expect(focus).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

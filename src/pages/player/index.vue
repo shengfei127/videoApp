@@ -66,7 +66,16 @@ const playerHeader = computed(() =>
 const sourceLabel = computed(() =>
   activeVideo.value?.sourceType === 'baidu' ? '原始画质' : '媒体直链'
 )
-const safePath = computed(() => activeVideo.value?.path ?? '')
+const safePath = computed(() =>
+  activeVideo.value?.sourceType === 'baidu' ? activeVideo.value.path : ''
+)
+const unsupportedSource = computed(() =>
+  activeVideo.value?.sourceType === 'baidu'
+    ? safePath.value
+    : activeVideo.value
+      ? '媒体直链文件'
+      : ''
+)
 
 onLoad((query) => {
   void loadFromQuery(query?.id)
@@ -179,6 +188,9 @@ function onPlayerError(event: Event): void {
 }
 
 async function handlePlayerError(event: Event): Promise<void> {
+  const errorLoad = playerLoad
+  const errorGeneration = loadGeneration
+  const errorVideoId = activeVideo.value?.id
   const message = readErrorMessage(event)
   if (isUnsupportedFormat(message)) {
     status.value = 'unsupported'
@@ -186,19 +198,37 @@ async function handlePlayerError(event: Event): Promise<void> {
     return
   }
 
-  if (!isAuthorizationPlaybackFailure(message) || !playerLoad) {
+  if (
+    activeVideo.value?.sourceType !== 'baidu' ||
+    !isAuthorizationPlaybackFailure(message) ||
+    !errorLoad
+  ) {
     status.value = 'error'
     playerError.value = '播放失败，请稍后重试'
     return
   }
 
   try {
-    const url = await playerLoad.retryAfterAuthorizationFailure(
+    const url = await errorLoad.retryAfterAuthorizationFailure(
       new BaiduError('http', 403)
     )
+    if (
+      errorGeneration !== loadGeneration ||
+      activeVideo.value?.id !== errorVideoId ||
+      playerLoad !== errorLoad
+    ) {
+      return
+    }
     playbackUrl.value = url
     status.value = 'ready'
   } catch (error) {
+    if (
+      errorGeneration !== loadGeneration ||
+      activeVideo.value?.id !== errorVideoId ||
+      playerLoad !== errorLoad
+    ) {
+      return
+    }
     status.value = 'error'
     playerError.value =
       error instanceof PlaybackResolutionError && error.code === 'retry-exhausted'
@@ -355,7 +385,7 @@ function applySafeError(error: unknown): void {
           controls
           enable-play-gesture
           show-center-play-btn
-          enable-fullscreen
+          show-fullscreen-btn
           @loadedmetadata="onLoadedMetadata"
           @play="onPlay"
           @timeupdate="onTimeUpdate"
@@ -373,8 +403,8 @@ function applySafeError(error: unknown): void {
       <view v-else class="player-state player-state--error">
         <CircleAlert :size="30" aria-hidden="true" />
         <text role="alert">{{ playerError }}</text>
-        <text v-if="status === 'unsupported' && safePath" class="player-state__path">
-          {{ safePath }}
+        <text v-if="status === 'unsupported' && unsupportedSource" class="player-state__path">
+          {{ unsupportedSource }}
         </text>
         <view class="player-state__actions">
           <button
