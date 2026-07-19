@@ -241,6 +241,9 @@ function continuePlayback(): void {
   const position = lifecycle?.continueFrom(
     savedProgress.value?.positionSeconds ?? 0
   ) ?? 0
+  currentTime.value = position
+  playbackBegun.value = true
+  lifecycle?.onPlaybackBegin()
   resumeOpen.value = false
   videoContext?.seek(position)
   videoContext?.play()

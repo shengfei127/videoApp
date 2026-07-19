@@ -255,6 +255,9 @@ describe('Player page', () => {
     expect(pageMocks.videoContext.seek).toHaveBeenCalledWith(120)
     expect(pageMocks.videoContext.play).toHaveBeenCalledOnce()
 
+    lifecycle.onHide.mock.calls[0]![0]()
+    expect(store.progressHistory[0]).toMatchObject({ positionSeconds: 120 })
+
     store.progressHistory = [
       {
         videoId: video.id,
