@@ -61,7 +61,9 @@ function isSafeLocalPath(path: string): boolean {
       path.startsWith('/') &&
       !path.startsWith('//') &&
       !/[\u0000-\u001f\u007f]/u.test(path) &&
-      !/(?:access[_-]?token|dlink|authorization|bearer|sign)/iu.test(path)
+      !path.includes('://') &&
+      !path.includes('?') &&
+      !path.includes('#')
   )
 }
 

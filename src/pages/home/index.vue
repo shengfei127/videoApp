@@ -12,10 +12,7 @@ import { useAppStore } from '@/stores/appStore'
 const store = useAppStore()
 
 const showSourceActions = computed(
-  () =>
-    !store.authSession &&
-    safeLength(store.directRecords) === 0 &&
-    safeLength(store.mergedVideos) === 0
+  () => !store.authSession && safeLength(store.directRecords) === 0
 )
 const continueItem = computed<ContinueWatchingItem | undefined>(() => {
   const items = store.continueWatching
@@ -146,51 +143,6 @@ function padTime(value: number): string {
     </view>
 
     <view
-      v-if="showSourceActions"
-      class="home-section home-sources"
-      data-home-section="sources"
-      role="region"
-      aria-labelledby="home-sources-title"
-    >
-      <text
-        id="home-sources-title"
-        class="section-title"
-        role="heading"
-        aria-level="2"
-      >
-        添加视频来源
-      </text>
-      <view class="home-source-list">
-        <button
-          class="home-source-action"
-          aria-label="连接百度网盘"
-          @click="openSource('/pages/oauth/index')"
-        >
-          <Cloud :size="24" :stroke-width="1.8" aria-hidden="true" />
-          <view class="home-source-action__copy">
-            <text class="home-source-action__title">连接百度网盘</text>
-            <text class="home-source-action__description">
-              读取应用专属目录中的视频
-            </text>
-          </view>
-        </button>
-        <button
-          class="home-source-action"
-          aria-label="导入媒体直链"
-          @click="openSource('/pages/library/index?openImport=1')"
-        >
-          <Link :size="24" :stroke-width="1.8" aria-hidden="true" />
-          <view class="home-source-action__copy">
-            <text class="home-source-action__title">导入媒体直链</text>
-            <text class="home-source-action__description">
-              添加 HTTPS MP4 或 M3U8
-            </text>
-          </view>
-        </button>
-      </view>
-    </view>
-
-    <view
       v-if="continueItem"
       class="home-section"
       data-home-section="continue"
@@ -240,6 +192,51 @@ function padTime(value: number): string {
           </view>
         </view>
       </button>
+    </view>
+
+    <view
+      v-if="showSourceActions"
+      class="home-section home-sources"
+      data-home-section="sources"
+      role="region"
+      aria-labelledby="home-sources-title"
+    >
+      <text
+        id="home-sources-title"
+        class="section-title"
+        role="heading"
+        aria-level="2"
+      >
+        添加视频来源
+      </text>
+      <view class="home-source-list">
+        <button
+          class="home-source-action"
+          aria-label="连接百度网盘"
+          @click="openSource('/pages/oauth/index')"
+        >
+          <Cloud :size="24" :stroke-width="1.8" aria-hidden="true" />
+          <view class="home-source-action__copy">
+            <text class="home-source-action__title">连接百度网盘</text>
+            <text class="home-source-action__description">
+              读取应用专属目录中的视频
+            </text>
+          </view>
+        </button>
+        <button
+          class="home-source-action"
+          aria-label="导入媒体直链"
+          @click="openSource('/pages/library/index?openImport=1')"
+        >
+          <Link :size="24" :stroke-width="1.8" aria-hidden="true" />
+          <view class="home-source-action__copy">
+            <text class="home-source-action__title">导入媒体直链</text>
+            <text class="home-source-action__description">
+              添加 HTTPS MP4 或 M3U8
+            </text>
+          </view>
+        </button>
+      </view>
     </view>
 
     <view

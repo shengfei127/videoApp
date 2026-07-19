@@ -85,6 +85,20 @@ describe('VideoRow', () => {
     expect(wrapper.get('.video-row__metadata').text()).toContain('已看到 01:30')
     expect(wrapper.get('.video-row__metadata').text()).toContain('时长 10:00')
   })
+
+  it('shows a valid absolute Baidu path whose directory name contains sign', () => {
+    const path = '/apps/\u7247\u523b/design/episode.mp4'
+    const video: VideoItem = {
+      id: 'baidu:design-episode',
+      sourceType: 'baidu',
+      sourceId: 'design-episode',
+      name: 'Design episode.mp4',
+      path
+    }
+    const wrapper = mount(VideoRow, { props: { video } })
+
+    expect(wrapper.get('.video-row__metadata').text()).toContain(path)
+  })
 })
 
 describe('Home page', () => {
@@ -111,6 +125,30 @@ describe('Home page', () => {
     expect(uni.navigateTo).toHaveBeenLastCalledWith({
       url: '/pages/library/index?openImport=1'
     })
+  })
+
+  it('keeps source actions visible when disconnected with only stale Baidu cache', () => {
+    const { store, wrapper } = mountHome((appStore) => {
+      appStore.baiduVideos = [
+        {
+          id: 'baidu:stale-cache',
+          sourceType: 'baidu',
+          sourceId: 'stale-cache',
+          name: '缓存中的旧视频.mp4',
+          path: '/apps/片刻/缓存中的旧视频.mp4'
+        }
+      ]
+    })
+
+    expect(store.authSession).toBeNull()
+    expect(store.directRecords).toEqual([])
+    expect(store.mergedVideos).toHaveLength(1)
+    expect(
+      wrapper.findAll('button.home-source-action').map((action) => action.text())
+    ).toEqual([
+      expect.stringContaining('连接百度网盘'),
+      expect.stringContaining('导入媒体直链')
+    ])
   })
 
   it('puts resume first with the saved timestamp, clamped progress, and encoded player route', async () => {

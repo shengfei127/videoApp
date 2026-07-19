@@ -8,14 +8,15 @@ const props = defineProps<{
   name?: string
 }>()
 
-const failed = ref(false)
+const failedSrc = ref<string>()
 const label = computed(() => props.alt?.trim() || props.name?.trim() || '视频')
-const safeSrc = computed(() =>
-  failed.value ? undefined : toSafeThumbnailUrl(props.src)
-)
+const safeSrc = computed(() => {
+  const candidate = toSafeThumbnailUrl(props.src)
+  return candidate && candidate !== failedSrc.value ? candidate : undefined
+})
 
 function handleImageError(): void {
-  failed.value = true
+  failedSrc.value = safeSrc.value
 }
 
 function toSafeThumbnailUrl(value: string | undefined): string | undefined {
@@ -25,16 +26,13 @@ function toSafeThumbnailUrl(value: string | undefined): string | undefined {
 
   try {
     const url = new URL(value)
-    const hasAccessToken = [...url.searchParams.keys()].some(
-      (key) => key.toLocaleLowerCase('en-US') === 'access_token'
-    )
 
     if (
       url.protocol !== 'https:' ||
       url.username ||
       url.password ||
       url.hash ||
-      hasAccessToken
+      hasSensitiveQuery(url.searchParams)
     ) {
       return undefined
     }
@@ -43,6 +41,25 @@ function toSafeThumbnailUrl(value: string | undefined): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function hasSensitiveQuery(searchParams: URLSearchParams): boolean {
+  for (const [key, value] of searchParams) {
+    const normalizedKey = key.toLocaleLowerCase('en-US')
+    if (
+      normalizedKey === 'token' ||
+      normalizedKey.endsWith('_token') ||
+      normalizedKey.endsWith('-token') ||
+      normalizedKey === 'authorization' ||
+      normalizedKey === 'dlink' ||
+      /(?:^|[^a-z0-9_-])(?:access_token|token|authorization|dlink)=/iu.test(value) ||
+      /\bbearer\s+\S+/iu.test(value)
+    ) {
+      return true
+    }
+  }
+
+  return false
 }
 </script>
 
