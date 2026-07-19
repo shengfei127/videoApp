@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { VideoItem } from '@/domain/video'
+import { BaiduError } from '@/features/baidu/baiduErrors'
 import PlayerPage from '@/pages/player/index.vue'
 import { useAppStore } from '@/stores/appStore'
 
@@ -176,6 +177,86 @@ describe('Player page', () => {
     ).toBeUndefined()
   })
 
+  it('expires a locally stale Baidu session without clearing cached or local media data', async () => {
+    const video = baiduVideo()
+    const expiredSession = {
+      ...validSession(),
+      expiresAt: Date.now() - 1
+    }
+    const { store, wrapper } = mountPlayer((appStore) => {
+      appStore.baiduVideos = [video]
+      appStore.authSession = expiredSession
+      appStore.directRecords = [
+        {
+          id: 'direct-preserved',
+          name: 'Preserved.m3u8',
+          url: 'https://media.example.test/preserved.m3u8',
+          mediaKind: 'hls',
+          addedAt: 1
+        }
+      ]
+      appStore.progressHistory = [
+        {
+          videoId: video.id,
+          positionSeconds: 120,
+          durationSeconds: 600,
+          updatedAt: 1,
+          completed: false
+        }
+      ]
+    })
+
+    await loadPlayer(video.id)
+    await flushPromises()
+
+    expect(store.authSession).toBeNull()
+    expect(store.baiduVideos).toHaveLength(1)
+    expect(store.directRecords).toHaveLength(1)
+    expect(store.progressHistory).toHaveLength(1)
+    expect(wrapper.get('[role="alert"]').text()).toContain('重新连接百度网盘')
+    expect(wrapper.find('[data-testid="player-reconnect"]').exists()).toBe(true)
+  })
+
+  it('expires a revoked Baidu session during initial resolution and the one 403 refresh', async () => {
+    const initial = baiduVideo()
+    pageMocks.resolvePlaybackUrl.mockRejectedValueOnce(
+      new BaiduError('authorization', 110)
+    )
+    const first = mountPlayer((appStore) => {
+      appStore.baiduVideos = [initial]
+      appStore.authSession = validSession()
+    })
+
+    await loadPlayer(initial.id)
+    await flushPromises()
+
+    expect(first.store.authSession).toBeNull()
+    expect(first.wrapper.get('[role="alert"]').text()).toContain(
+      '重新连接百度网盘'
+    )
+
+    const refreshed = baiduVideo()
+    pageMocks.resolvePlaybackUrl
+      .mockResolvedValueOnce('https://d.pcs.baidu.com/file/current?access_token=private')
+      .mockRejectedValueOnce(new BaiduError('authorization', -6))
+    const second = mountPlayer((appStore) => {
+      appStore.baiduVideos = [refreshed]
+      appStore.authSession = validSession()
+    })
+
+    await loadPlayer(refreshed.id)
+    await flushPromises()
+    await second.wrapper.get('[data-testid="player-video"]').trigger('error', {
+      detail: { errMsg: 'HTTP 403' }
+    })
+    await flushPromises()
+
+    expect(second.store.authSession).toBeNull()
+    expect(second.wrapper.get('[role="alert"]').text()).toContain(
+      '重新连接百度网盘'
+    )
+  })
+
   it('does not retry a direct link after a 403 playback error', async () => {
     const video = directVideo('https://media.example.test/movie.mp4')
     const { wrapper } = mountPlayer((appStore) => {
@@ -199,6 +280,8 @@ describe('Player page', () => {
 
     expect(pageMocks.resolvePlaybackUrl).not.toHaveBeenCalled()
     expect(wrapper.get('[role="alert"]').text()).toContain('播放失败')
+    expect(wrapper.find('[data-testid="player-retry"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="player-reconnect"]').exists()).toBe(false)
   })
 
   it('does not let an old Baidu 403 refresh overwrite a newly loaded video', async () => {

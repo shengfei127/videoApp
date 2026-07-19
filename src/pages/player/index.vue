@@ -44,6 +44,7 @@ const metadataReady = ref(false)
 const playbackBegun = ref(false)
 const resumeOpen = ref(false)
 const selectedRate = ref<(typeof PLAYBACK_RATES)[number]>(1)
+const authorizationExpired = ref(false)
 let videoContext: UniNamespace.VideoContext | null = null
 let playerLoad: PlayerPlaybackLoad | null = null
 let lifecycle: PlayerLifecycle | null = null
@@ -134,6 +135,9 @@ async function loadFromQuery(rawId: unknown): Promise<void> {
     if (generation !== loadGeneration) {
       return
     }
+    if (expireAuthorizationIfNeeded(error)) {
+      return
+    }
     applySafeError(error)
   }
 }
@@ -147,6 +151,7 @@ function resetPlayer(video: VideoItem | null): void {
   playbackBegun.value = false
   resumeOpen.value = false
   selectedRate.value = 1
+  authorizationExpired.value = false
   playerError.value = ''
   playerLoad = null
   lifecycle = null
@@ -238,6 +243,9 @@ async function handlePlayerError(event: Event): Promise<void> {
     ) {
       return
     }
+    if (expireAuthorizationIfNeeded(error)) {
+      return
+    }
     status.value = 'error'
     playerError.value =
       error instanceof PlaybackResolutionError && error.code === 'retry-exhausted'
@@ -276,6 +284,10 @@ function retry(): void {
   if (id) {
     void loadFromQuery(encodeURIComponent(id))
   }
+}
+
+function reconnectBaidu(): void {
+  uni.navigateTo({ url: '/pages/oauth/index' })
 }
 
 function goBack(): void {
@@ -359,11 +371,33 @@ function isUnsupportedFormat(message: string): boolean {
 }
 
 function applySafeError(error: unknown): void {
+  if (expireAuthorizationIfNeeded(error)) {
+    return
+  }
   status.value = 'error'
   playerError.value =
     error instanceof PlaybackResolutionError && error.code === 'authorization-required'
       ? '请先连接百度网盘'
       : '无法加载播放地址，请稍后重试'
+}
+
+function expireAuthorizationIfNeeded(error: unknown): boolean {
+  if (
+    !(
+      (error instanceof PlaybackResolutionError &&
+        error.code === 'authorization-required') ||
+      (error instanceof BaiduError && error.kind === 'authorization')
+    )
+  ) {
+    return false
+  }
+
+  loadGeneration += 1
+  store.expireBaiduSession()
+  authorizationExpired.value = true
+  status.value = 'error'
+  playerError.value = '百度网盘授权已过期，请重新连接百度网盘'
+  return true
 }
 </script>
 
@@ -420,7 +454,7 @@ function applySafeError(error: unknown): void {
         </text>
         <view class="player-state__actions">
           <button
-            v-if="status === 'error'"
+            v-if="status === 'error' && !authorizationExpired"
             type="button"
             data-testid="player-retry"
             class="player-action player-action--primary"
@@ -428,6 +462,15 @@ function applySafeError(error: unknown): void {
           >
             <RefreshCw :size="18" aria-hidden="true" />
             重试
+          </button>
+          <button
+            v-if="status === 'error' && authorizationExpired"
+            type="button"
+            data-testid="player-reconnect"
+            class="player-action player-action--primary"
+            @click="reconnectBaidu"
+          >
+            重新连接百度网盘
           </button>
           <button type="button" class="player-action" @click="goBack">返回视频库</button>
         </view>

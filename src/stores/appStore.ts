@@ -503,6 +503,17 @@ export function createAppStore(
       }
     }
 
+    function expireBaiduSession(): void {
+      try {
+        dependencies.authRepository.clearSession()
+      } catch {
+        // Keep the current process fail-closed when persisted cleanup is unavailable.
+      }
+      authSession.value = null
+      invalidateSync()
+      lastError.value = safeError('authorization')
+    }
+
     function clearCatalogCache(): boolean {
       try {
         dependencies.catalogCache.clear()
@@ -622,6 +633,7 @@ export function createAppStore(
       reloadDirectRecords,
       reloadProgress,
       disconnectBaidu,
+      expireBaiduSession,
       clearCatalogCache,
       clearProgress
     }

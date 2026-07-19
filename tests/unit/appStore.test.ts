@@ -906,6 +906,20 @@ describe('app store local reload and clear actions', () => {
     expect(context.store.progressHistory).toHaveLength(1)
   })
 
+  it('fails closed on an expired-session cleanup failure while preserving every non-auth slice', async () => {
+    const context = createFailingRemovalContext(
+      'actions-expire-failure',
+      AUTH_STORAGE_KEY
+    )
+    await context.store.initialize()
+
+    context.store.expireBaiduSession()
+
+    expect(context.store.authSession).toBeNull()
+    expect(context.store.lastError).toMatchObject({ code: 'authorization' })
+    expectUnrelatedSlicesPreserved(context)
+  })
+
   it('clears cache or history independently and keeps unrelated state visible', async () => {
     const context = createTestContext('actions-clear')
     context.authRepository.saveSession(validSession())
