@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   OAuthCancellationError,
   buildAuthorizeUrl,
+  createOAuthState,
   parseOAuthCallback
 } from '@/features/auth/oauth'
 import {
@@ -75,6 +76,39 @@ describe('buildAuthorizeUrl', () => {
     expect(() => buildAuthorizeUrl(invalidConfig, state)).toThrow(
       '百度网盘授权配置无效'
     )
+  })
+})
+
+describe('createOAuthState', () => {
+  it('uses crypto.randomUUID when the platform provides it', () => {
+    const randomUUID = vi.fn(() => 'secure-random-uuid')
+    vi.stubGlobal('crypto', { randomUUID })
+
+    expect(createOAuthState()).toBe('secure-random-uuid')
+    expect(randomUUID).toHaveBeenCalledOnce()
+  })
+
+  it('falls back only to cryptographic random bytes', () => {
+    const getRandomValues = vi.fn((values: Uint8Array) => {
+      values.forEach((_, index) => {
+        values[index] = index
+      })
+      return values
+    })
+    vi.stubGlobal('crypto', { getRandomValues })
+
+    expect(createOAuthState()).toBe(
+      '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
+    )
+    expect(getRandomValues).toHaveBeenCalledOnce()
+  })
+
+  it('fails closed without secure randomness and never uses Math.random', () => {
+    const weakRandom = vi.spyOn(Math, 'random')
+    vi.stubGlobal('crypto', {})
+
+    expect(() => createOAuthState()).toThrow('无法安全创建授权校验状态')
+    expect(weakRandom).not.toHaveBeenCalled()
   })
 })
 

@@ -127,6 +127,57 @@ describe('DirectLinkService', () => {
     })
   })
 
+  it('persists an explicitly unverified unknown HTTPS link without inventing a media type', () => {
+    const service = new DirectLinkService(createMemoryStorage(), {
+      now: () => 1000
+    })
+
+    expect(
+      service.addUnverified({
+        url: 'https://cdn.example.test/stream?private=do-not-log',
+        name: '  待验证直播  '
+      })
+    ).toEqual({
+      id: 'direct-1',
+      name: '待验证直播',
+      url: 'https://cdn.example.test/stream?private=do-not-log',
+      mediaKind: 'unverified',
+      addedAt: 1000
+    })
+  })
+
+  it('never force-adds HTTP or malformed links', () => {
+    const service = new DirectLinkService(createMemoryStorage())
+
+    expect(() =>
+      service.addUnverified({ url: 'http://cdn.example.test/stream' })
+    ).toThrow('HTTPS')
+    expect(() => service.addUnverified({ url: 'not a URL' })).toThrow('HTTPS')
+    expect(service.list()).toEqual([])
+  })
+
+  it('updates an explicitly unverified link while preserving id and addedAt', () => {
+    const service = new DirectLinkService(createMemoryStorage(), {
+      now: () => 1000
+    })
+    const original = service.add({
+      url: 'https://cdn.example.test/original.mp4'
+    })
+
+    const updated = service.updateUnverified(original.id, {
+      url: 'https://cdn.example.test/changed-stream',
+      name: 'Changed stream'
+    })
+
+    expect(updated).toEqual({
+      id: original.id,
+      name: 'Changed stream',
+      url: 'https://cdn.example.test/changed-stream',
+      mediaKind: 'unverified',
+      addedAt: original.addedAt
+    })
+  })
+
   it('drops an unverified persisted ordinary HTTPS webpage', () => {
     const storage = createMemoryStorage()
     storage.write(DIRECT_VIDEO_STORAGE_KEY, [
@@ -155,6 +206,29 @@ describe('DirectLinkService', () => {
 
     expect(new DirectLinkService(storage).list()).toMatchObject([
       { id: 'hls-stream', mediaKind: 'hls' }
+    ])
+  })
+
+  it('accepts a persisted extensionless HTTPS record marked explicitly unverified', () => {
+    const storage = createMemoryStorage()
+    storage.write(DIRECT_VIDEO_STORAGE_KEY, [
+      {
+        id: 'unverified-stream',
+        name: 'Unverified stream',
+        url: 'https://cdn.example.test/stream?token=abc',
+        mediaKind: 'unverified',
+        addedAt: 1000
+      }
+    ])
+
+    expect(new DirectLinkService(storage).list()).toEqual([
+      {
+        id: 'unverified-stream',
+        name: 'Unverified stream',
+        url: 'https://cdn.example.test/stream?token=abc',
+        mediaKind: 'unverified',
+        addedAt: 1000
+      }
     ])
   })
 

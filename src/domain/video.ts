@@ -16,7 +16,7 @@ export interface DirectVideoRecord {
   id: string
   name: string
   url: string
-  mediaKind: 'mp4' | 'hls'
+  mediaKind: 'mp4' | 'hls' | 'unverified'
   addedAt: number
 }
 

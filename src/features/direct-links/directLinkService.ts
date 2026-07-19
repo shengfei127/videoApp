@@ -60,13 +60,19 @@ export class DirectLinkService {
     probeContentType?: string
   ): DirectVideoRecord {
     const { url, mediaKind } = this.validateUrl(input.url, probeContentType)
-    const record: DirectVideoRecord = {
-      id: createDefaultUuid(),
-      name: resolveName(input.name, url),
-      url: url.href,
-      mediaKind,
-      addedAt: this.now()
-    }
+    const record = this.createRecord(input, url, mediaKind)
+
+    this.storage.write(DIRECT_VIDEO_STORAGE_KEY, [...this.list(), record])
+
+    return record
+  }
+
+  addUnverified(input: {
+    url: string
+    name?: string
+  }): DirectVideoRecord {
+    const url = validateUnverifiedUrl(input.url)
+    const record = this.createRecord(input, url, 'unverified')
 
     this.storage.write(DIRECT_VIDEO_STORAGE_KEY, [...this.list(), record])
 
@@ -115,6 +121,14 @@ export class DirectLinkService {
     return updated
   }
 
+  updateUnverified(
+    id: string,
+    input: { url: string; name?: string }
+  ): DirectVideoRecord {
+    const url = validateUnverifiedUrl(input.url)
+    return this.replaceRecord(id, input, url, 'unverified')
+  }
+
   remove(id: string): void {
     this.storage.write(
       DIRECT_VIDEO_STORAGE_KEY,
@@ -124,6 +138,49 @@ export class DirectLinkService {
 
   clear(): void {
     this.storage.remove(DIRECT_VIDEO_STORAGE_KEY)
+  }
+
+  private createRecord(
+    input: { url: string; name?: string },
+    url: URL,
+    mediaKind: DirectMediaKind
+  ): DirectVideoRecord {
+    return {
+      id: createDefaultUuid(),
+      name: resolveName(input.name, url),
+      url: url.href,
+      mediaKind,
+      addedAt: this.now()
+    }
+  }
+
+  private replaceRecord(
+    id: string,
+    input: { url: string; name?: string },
+    url: URL,
+    mediaKind: DirectMediaKind
+  ): DirectVideoRecord {
+    const records = this.list()
+    const existing = records.find((record) => record.id === id)
+
+    if (!existing) {
+      throw new Error('未找到要更新的媒体链接')
+    }
+
+    const updated: DirectVideoRecord = {
+      id: existing.id,
+      name: resolveName(input.name, url),
+      url: url.href,
+      mediaKind,
+      addedAt: existing.addedAt
+    }
+
+    this.storage.write(
+      DIRECT_VIDEO_STORAGE_KEY,
+      records.map((record) => (record.id === id ? updated : record))
+    )
+
+    return updated
   }
 
   private validateUrl(
@@ -148,6 +205,14 @@ export class DirectLinkService {
 
     return { url: new URL(value), mediaKind }
   }
+}
+
+function validateUnverifiedUrl(value: string): URL {
+  if (classifyDirectUrl(value) !== 'unknown') {
+    throw new Error('仅可尝试添加有效的未知 HTTPS 媒体链接')
+  }
+
+  return new URL(value)
 }
 
 function getProbeMediaKind(
@@ -245,5 +310,5 @@ function normalizeDirectVideoRecord(
 }
 
 function isDirectMediaKind(value: unknown): value is DirectMediaKind {
-  return value === 'mp4' || value === 'hls'
+  return value === 'mp4' || value === 'hls' || value === 'unverified'
 }

@@ -14,6 +14,35 @@ export class OAuthCancellationError extends Error {
   }
 }
 
+export function createOAuthState(): string {
+  const secureCrypto = globalThis.crypto
+
+  if (typeof secureCrypto?.randomUUID === 'function') {
+    try {
+      const state = secureCrypto.randomUUID()
+      if (state.trim()) {
+        return state
+      }
+    } catch {
+      // Continue to the other cryptographically secure platform API.
+    }
+  }
+
+  if (typeof secureCrypto?.getRandomValues === 'function') {
+    try {
+      const bytes = new Uint8Array(32)
+      secureCrypto.getRandomValues(bytes)
+      return Array.from(bytes, (value) =>
+        value.toString(16).padStart(2, '0')
+      ).join('')
+    } catch {
+      // Fail closed below. Weak random fallbacks are not acceptable for OAuth.
+    }
+  }
+
+  throw new Error('当前环境无法安全创建授权校验状态')
+}
+
 export function buildAuthorizeUrl(
   config: BaiduOAuthConfig,
   state: string
