@@ -8,7 +8,7 @@ import {
   Plus,
   RefreshCw,
   Search
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 import BottomNav from '@/components/BottomNav.vue'
 import DirectLinkSheet from '@/components/DirectLinkSheet.vue'
@@ -455,7 +455,7 @@ function findFolderTrail(
 @use '@/styles/tokens.scss' as *;
 
 .library-page {
-  padding-top: max(24rpx, env(safe-area-inset-top));
+  padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx);
 }
 
 .library-header,
@@ -561,6 +561,9 @@ function findFolderTrail(
 }
 
 .library-segment__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   box-sizing: border-box;
   width: 100%;
   min-width: 0;

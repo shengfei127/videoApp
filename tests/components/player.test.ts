@@ -30,6 +30,7 @@ const pageMocks = vi.hoisted(() => ({
   videoContext: {
     seek: vi.fn(),
     play: vi.fn(),
+    pause: vi.fn(),
     playbackRate: vi.fn(),
     requestFullScreen: vi.fn()
   }
@@ -156,6 +157,45 @@ describe('Player page', () => {
     await flushPromises()
     expect(pageMocks.resolvePlaybackUrl).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[role="alert"]').text()).toContain('无法刷新播放地址')
+  })
+
+  it('saves native playback when Android supplies duration through timeupdate only', async () => {
+    const video = baiduVideo()
+    pageMocks.resolvePlaybackUrl.mockResolvedValue('https://d.pcs.baidu.com/file/native')
+    const { store, wrapper } = mountPlayer((appStore) => {
+      appStore.baiduVideos = [video]
+      appStore.authSession = validSession()
+    })
+    await loadPlayer(video.id)
+    await flushPromises()
+    const player = wrapper.get('[data-testid="player-video"]')
+    await player.trigger('play')
+    await player.trigger('timeupdate', { detail: { currentTime: 42, duration: 600 } })
+    expect(store.progressHistory[0]).toMatchObject({ videoId: video.id, positionSeconds: 42 })
+  })
+
+  it('offers native resume before a first timeupdate or pause can overwrite saved progress', async () => {
+    const video = baiduVideo()
+    pageMocks.resolvePlaybackUrl.mockResolvedValue('https://d.pcs.baidu.com/file/native')
+    const { store, wrapper } = mountPlayer((appStore) => {
+      appStore.baiduVideos = [video]
+      appStore.authSession = validSession()
+      appStore.progressHistory = [{ videoId: video.id, positionSeconds: 120,
+        durationSeconds: 600, updatedAt: 1, completed: false }]
+    })
+    await loadPlayer(video.id)
+    await flushPromises()
+    const player = wrapper.get('[data-testid="player-video"]')
+    await player.trigger('play')
+    await player.trigger('timeupdate', { detail: { currentTime: 1, duration: 600 } })
+    expect(wrapper.find('[data-testid="resume-continue"]').exists()).toBe(true)
+    expect(pageMocks.videoContext.pause).toHaveBeenCalled()
+    expect(player.attributes('style')).toContain('display: none')
+    await player.trigger('pause', { detail: { currentTime: 1, duration: 600 } })
+    expect(store.progressHistory[0]?.positionSeconds).toBe(120)
+    await wrapper.get('[data-testid="resume-continue"]').trigger('click')
+    expect(pageMocks.videoContext.seek).toHaveBeenCalledWith(120)
+    expect(pageMocks.videoContext.play).toHaveBeenCalled()
   })
 
   it('omits the browser-forbidden Baidu User-Agent header on H5', async () => {

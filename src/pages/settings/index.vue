@@ -8,7 +8,7 @@ import {
   LogOut,
   ShieldCheck,
   Trash2
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 import BottomNav from '@/components/BottomNav.vue'
 import { runtimeConfig } from '@/config/runtime'
@@ -305,7 +305,7 @@ function formatDateTime(value: number): string {
 @use '@/styles/tokens.scss' as *;
 
 .settings-page {
-  padding-top: max(24rpx, env(safe-area-inset-top));
+  padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx);
 }
 
 .settings-header {

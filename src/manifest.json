@@ -2,11 +2,14 @@
     "name" : "片刻",
     "appid" : "__UNI__8831D47",
     "description" : "Pianke Android video player",
-    "versionName" : "1.0.0",
-    "versionCode" : 100,
+    "versionName" : "1.0.7",
+    "versionCode" : 107,
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,
+        "modules" : {
+            "VideoPlayer" : {}
+        },
         "screenOrientation" : [ "portrait-primary", "landscape-primary", "landscape-secondary" ],
         "distribute" : {
             "android" : {

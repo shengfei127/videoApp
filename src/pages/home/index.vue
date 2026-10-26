@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Cloud, Link, Play, ShieldCheck } from 'lucide-vue-next'
+import { Cloud, Link, Play, ShieldCheck } from '@/components/icons'
 
 import BottomNav from '@/components/BottomNav.vue'
 import VideoRow from '@/components/VideoRow.vue'
@@ -277,7 +277,7 @@ function padTime(value: number): string {
   width: 100%;
   max-width: 960rpx;
   margin: 0 auto;
-  padding-top: calc(env(safe-area-inset-top) + 24rpx);
+  padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx);
   padding-bottom: calc(156rpx + env(safe-area-inset-bottom));
   overflow-x: hidden;
 }

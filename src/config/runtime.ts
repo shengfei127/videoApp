@@ -13,7 +13,7 @@ export interface RuntimeBuildEnvironment {
 }
 
 const DEFAULT_BAIDU_FOLDER = '片刻'
-const DEFAULT_BAIDU_REDIRECT_URI = 'https://localhost/pianke/oauth/baidu'
+const DEFAULT_BAIDU_REDIRECT_URI = 'https://openapi.baidu.com/oauth/2.0/login_success'
 const SAFE_FOLDER_SEGMENT = /^[\p{L}\p{N} _-]{1,20}$/u
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/
 

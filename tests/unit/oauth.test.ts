@@ -343,6 +343,7 @@ describe('OAuth WebView adapter', () => {
       authorizeUrl,
       'pianke-baidu-oauth',
       {
+        zindex: 1000,
         titleNView: {
           titleText: '连接百度网盘',
           autoBackButton: true
@@ -352,7 +353,7 @@ describe('OAuth WebView adapter', () => {
     expect(app.overrideUrlLoading).toHaveBeenCalledWith(
       {
         mode: 'reject',
-        match: '^https://localhost/pianke/oauth/baidu(?:[?#]|$)'
+        match: '^https://localhost/pianke/oauth/baidu(?:[?#].*)?$'
       },
       expect.any(Function)
     )
@@ -1238,6 +1239,69 @@ describe('OAuth WebView adapter', () => {
     expect(onCallbackFailure).toHaveBeenCalledOnce()
     expect(onCallbackFailure).toHaveBeenCalledWith()
     expect(onCancel).not.toHaveBeenCalled()
+    expect(app.webview.close).toHaveBeenCalledOnce()
+  })
+})
+
+describe('native OAuth URL matching', () => {
+  it('matches the entire callback including authorization parameters as Android requires', () => {
+    const app = createPlusWebviewMock()
+    vi.stubGlobal('plus', app.plus)
+    const redirectUri = 'https://openapi.baidu.com/oauth/2.0/login_success'
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl({ ...config, redirectUri }, 'state-123'),
+      redirectUri,
+      onCallback: vi.fn()
+    })
+    const pattern = app.overrideUrlLoading.mock.calls[0]![0].match
+    // Android's Pattern.matches requires the whole URL, unlike RegExp.test.
+    const nativeMatch = new RegExp(`^(?:${pattern})$`)
+    expect(nativeMatch.test(`${redirectUri}#access_token=test-only&state=state-123&expires_in=3600&scope=basic,netdisk`)).toBe(true)
+    expect(nativeMatch.test(`${redirectUri}#error=access_denied&state=state-123`)).toBe(true)
+    expect(nativeMatch.test(`${redirectUri}?provider=value#state=state-123`)).toBe(true)
+    expect(nativeMatch.test(redirectUri)).toBe(true)
+    expect(nativeMatch.test(`${redirectUri}/other#access_token=test-only`)).toBe(false)
+    expect(nativeMatch.test(`${redirectUri}.evil#access_token=test-only`)).toBe(false)
+    expect(nativeMatch.test(redirectUri.replace('openapi.baidu.com', 'openapiXbaiduXcom'))).toBe(false)
+    handle.close()
+  })
+})
+
+describe('native OAuth document lifecycle', () => {
+  it('brings the loaded login page forward and ignores late loads after cancellation', () => {
+    const app = createPlusWebviewMock()
+    vi.stubGlobal('plus', app.plus)
+    const handle = openOAuthWebview({
+      authorizeUrl: buildAuthorizeUrl(config, 'state-123'),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn()
+    })
+    const loaded = app.webview.addEventListener.mock.calls.find(([event]) => event === 'loaded')![1]
+    loaded()
+    expect(app.show).toHaveBeenLastCalledWith('none')
+    handle.close()
+    const count = app.show.mock.calls.length
+    loaded()
+    expect(app.show).toHaveBeenCalledTimes(count)
+  })
+
+  it('clears pending authorization and reports a document error only once', () => {
+    const app = createPlusWebviewMock()
+    const pending = createPendingContext()
+    const onCallbackFailure = vi.fn()
+    vi.stubGlobal('plus', app.plus)
+    openOAuthWebview({
+      ...pending,
+      authorizeUrl: buildAuthorizeUrl(config, pending.state),
+      redirectUri: config.redirectUri,
+      onCallback: vi.fn(),
+      onCallbackFailure
+    })
+    const error = app.webview.addEventListener.mock.calls.find(([event]) => event === 'error')![1]
+    error()
+    error()
+    expectPendingCleared(pending)
+    expect(onCallbackFailure).toHaveBeenCalledOnce()
     expect(app.webview.close).toHaveBeenCalledOnce()
   })
 })

@@ -141,6 +141,7 @@ function openAppOAuthWebview(
   let webview: AppOAuthWebview
   try {
     webview = webviewApi.create(options.authorizeUrl, OAUTH_WEBVIEW_ID, {
+      zindex: 1000,
       titleNView: {
         titleText: '连接百度网盘',
         autoBackButton: true
@@ -244,6 +245,15 @@ function openAppOAuthWebview(
 
   try {
     webview.addEventListener('close', () => cancel(true))
+    // Native page transitions may cover a Webview created while loading.
+    // Present it again when its remote document has actually loaded.
+    webview.addEventListener('loaded', () => {
+      if (settled) return
+      try { webview.show('none') } catch { failLaunch() }
+    })
+    webview.addEventListener('error', () => {
+      if (!settled) failLaunch()
+    })
     if (settled) {
       return createDisabledHandle()
     }
@@ -503,7 +513,8 @@ function createMockCallbackUrl(options: OpenOAuthWebviewOptions): string {
 function buildRedirectMatchPattern(redirectUri: string): string {
   const redirect = new URL(redirectUri)
   const exactPrefix = `${redirect.origin}${redirect.pathname}`
-  return `^${escapeRegularExpression(exactPrefix)}(?:[?#]|$)`
+  // Android matches the entire URL; include the query/fragment payload.
+  return `^${escapeRegularExpression(exactPrefix)}(?:[?#].*)?$`
 }
 
 function escapeRegularExpression(value: string): string {

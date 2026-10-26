@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
+import { onReady } from '@dcloudio/uni-app'
 import {
   ArrowLeft,
   CircleAlert,
@@ -7,7 +8,7 @@ import {
   LoaderCircle,
   RefreshCw,
   ShieldCheck
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 import { runtimeConfig } from '@/config/runtime'
 import type { BaiduAuthSession } from '@/domain/video'
@@ -35,7 +36,7 @@ let webviewHandle: OAuthWebviewHandle | null = null
 let started = false
 let disposed = false
 
-onMounted(() => {
+onReady(() => {
   startAuthorization()
 })
 
@@ -276,7 +277,7 @@ function clearPendingSafely(): void {
 .oauth-page {
   box-sizing: border-box;
   min-height: 100vh;
-  padding: max(24rpx, env(safe-area-inset-top)) 24rpx 32rpx;
+  padding: calc(var(--status-bar-height, 0px) + 24rpx) 24rpx 32rpx;
   background: $color-bg;
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { Check, Link, Trash2, X } from 'lucide-vue-next'
+import { Check, Link, Trash2, X } from '@/components/icons'
 
 import type { DirectVideoRecord } from '@/domain/video'
 import {

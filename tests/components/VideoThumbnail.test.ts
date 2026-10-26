@@ -22,7 +22,7 @@ describe('VideoThumbnail', () => {
     const fallback = wrapper.get('[data-testid="video-thumbnail-fallback"]')
     expect(fallback.attributes('role')).toBe('img')
     expect(fallback.attributes('aria-label')).toBe('海边散步的缩略图不可用')
-    expect(fallback.find('svg').exists()).toBe(true)
+    expect(fallback.find('image').attributes('src')).toBe('/static/icons/Film.png')
   })
 
   it('retries when a failed source is replaced by a different safe URL', async () => {

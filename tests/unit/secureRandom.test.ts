@@ -71,3 +71,30 @@ describe('secure random helpers', () => {
     expect(weakRandom).not.toHaveBeenCalled()
   })
 })
+
+describe('Android native secure random fallback', () => {
+  it('uses SecureRandom when Web Crypto is unavailable and releases the bridge object', () => {
+    vi.stubGlobal('crypto', undefined)
+    const generator = {}
+    const invoke = vi.fn(() => 255)
+    const deleteObject = vi.fn()
+    const newObject = vi.fn(() => generator)
+    vi.stubGlobal('plus', { os: { name: 'Android' }, android: { newObject, invoke, deleteObject } })
+    expect(Array.from(secureRandomBytes(32))).toEqual(Array(32).fill(255))
+    expect(newObject).toHaveBeenCalledWith('java.security.SecureRandom')
+    expect(invoke).toHaveBeenCalledWith(generator, 'nextInt', 256)
+    expect(deleteObject).toHaveBeenCalledWith(generator)
+  })
+
+  it('rejects malformed bridge responses without falling back to Math.random', () => {
+    vi.stubGlobal('crypto', undefined)
+    const deleteObject = vi.fn()
+    vi.stubGlobal('plus', { os: { name: 'Android' }, android: {
+      newObject: () => ({}), invoke: () => -1, deleteObject
+    } })
+    const weakRandom = vi.spyOn(Math, 'random')
+    expect(() => secureRandomBytes(32)).toThrow('无法安全生成')
+    expect(deleteObject).toHaveBeenCalledOnce()
+    expect(weakRandom).not.toHaveBeenCalled()
+  })
+})

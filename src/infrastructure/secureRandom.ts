@@ -26,7 +26,7 @@ export function secureRandomBytes(length: number): Uint8Array {
 
   const getRandomValues = globalThis.crypto?.getRandomValues
   if (typeof getRandomValues !== 'function') {
-    throw new Error(SECURE_RANDOM_ERROR)
+    return androidSecureRandomBytes(length)
   }
 
   try {
@@ -58,4 +58,42 @@ export function createSecureUuid(): string {
     hex.slice(16, 20),
     hex.slice(20)
   ].join('-')
+}
+
+
+interface AndroidRandomBridge {
+  newObject(className: string): unknown
+  invoke(instance: unknown, method: string, bound: number): unknown
+  deleteObject?(instance: unknown): void
+}
+
+function androidSecureRandomBytes(length: number): Uint8Array {
+  const platform = typeof plus === 'undefined' ? undefined : plus as unknown as {
+    os?: { name?: string }
+    android?: AndroidRandomBridge
+  }
+  const bridge = platform?.android
+  if (platform?.os?.name !== 'Android' || !bridge) {
+    throw new Error(SECURE_RANDOM_ERROR)
+  }
+
+  let generator: unknown
+  try {
+    generator = bridge.newObject('java.security.SecureRandom')
+    const bytes = new Uint8Array(length)
+    for (let index = 0; index < length; index += 1) {
+      const value = bridge.invoke(generator, 'nextInt', 256)
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 255) {
+        throw new Error(SECURE_RANDOM_ERROR)
+      }
+      bytes[index] = value
+    }
+    return bytes
+  } catch {
+    throw new Error(SECURE_RANDOM_ERROR)
+  } finally {
+    if (generator) {
+      try { bridge.deleteObject?.(generator) } catch { /* Cleanup must not mask the result. */ }
+    }
+  }
 }

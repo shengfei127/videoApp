@@ -2,6 +2,7 @@ import type { Plugin } from 'vite'
 import { defineConfig } from 'vite'
 import uniModule from '@dcloudio/vite-plugin-uni'
 import packageMetadata from './package.json'
+import { legacyUnicodeRegex } from './scripts/legacy-unicode-regex.mjs'
 
 import { createPiankeBuildDefines } from './src/config/buildConstants'
 
@@ -13,7 +14,7 @@ const uni = (
 ) as unknown as UniPluginFactory
 
 export default defineConfig(({ mode, command }) => ({
-  plugins: [uni()],
+  plugins: [legacyUnicodeRegex() as Plugin, uni()],
   define: createPiankeBuildDefines(
     process.env.UNI_PLATFORM,
     mode,

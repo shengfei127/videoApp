@@ -144,6 +144,24 @@ test('direct-link import rejects HTTP and accepts an HTTPS M3U8', async ({ page 
   ).toBeVisible()
 })
 
+test('player stage stays 16:9 when CSS aspect-ratio is unavailable', async ({ page }) => {
+  await mockBaiduPlayback(page)
+  await openScenario(
+    page,
+    'resume',
+    `/pages/player/index?id=${encodeURIComponent(BAIDU_RESUME_VIDEO_ID)}`
+  )
+  await page.addStyleTag({
+    content: '.player-stage { aspect-ratio: auto !important; }'
+  })
+
+  const stage = page.locator('.player-stage')
+  await expect(stage).toBeVisible()
+  await expect
+    .poll(() => stage.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeGreaterThan(200)
+})
+
 test('resume dialog shows the exact timestamp and both choices', async ({ page }) => {
   const consoleErrors: string[] = []
   const pageErrors: string[] = []
@@ -193,6 +211,22 @@ test('resume dialog shows the exact timestamp and both choices', async ({ page }
       document.activeElement?.getAttribute('data-testid')
     )
   ).toBe('resume-continue')
+  await video.evaluate((element) => {
+    const media = element as HTMLVideoElement
+    let currentTime = 0
+    Object.defineProperty(media, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (value: number) => {
+        currentTime = value
+      }
+    })
+    media.play = () => Promise.resolve()
+  })
+  await page.getByTestId('resume-continue').click()
+  await expect
+    .poll(() => video.evaluate((element) => (element as HTMLVideoElement).currentTime))
+    .toBe(386)
   expect(pageErrors).toEqual([])
   expect(consoleErrors).toEqual([])
 })
@@ -221,6 +255,11 @@ test('disconnecting Baidu keeps direct links and playback progress', async ({ pa
       value: 1560
     })
     element.dispatchEvent(new Event('loadedmetadata', { bubbles: true }))
+    Object.defineProperty(element, 'currentTime', { configurable: true, writable: true, value: 0 })
+    ;(element as HTMLVideoElement).play = () => Promise.resolve()
+  })
+  await page.getByTestId('resume-continue').click()
+  await video.evaluate((element) => {
     element.dispatchEvent(new Event('play', { bubbles: true }))
     const pause = new Event('pause', { bubbles: true })
     Object.defineProperty(pause, 'detail', {

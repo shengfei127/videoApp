@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { onHide, onLoad, onUnload } from '@dcloudio/uni-app'
-import { ArrowLeft, CircleAlert, Gauge, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, CircleAlert, Gauge, RefreshCw } from '@/components/icons'
 
 import ResumeDialog from '@/components/ResumeDialog.vue'
 import {
@@ -17,6 +17,7 @@ import {
   type PlayerPlaybackLoad
 } from '@/features/playback/playbackResolver'
 import { PlayerLifecycle } from '@/features/playback/playerLifecycle'
+import { classifyProgress } from '@/features/playback/progressPolicy'
 import { ProgressRepository } from '@/features/playback/progressRepository'
 import { uniStorage } from '@/infrastructure/storage'
 import { useAppStore } from '@/stores/appStore'
@@ -163,15 +164,32 @@ function onLoadedMetadata(event: Event): void {
   metadataReady.value = duration.value > 0
   lifecycle?.onMetadata(duration.value)
   videoContext = uni.createVideoContext(VIDEO_CONTEXT_ID)
-  resumeOpen.value = Boolean(savedProgress.value)
+  const progress = savedProgress.value
+  resumeOpen.value = Boolean(progress && classifyProgress(
+    progress.positionSeconds, duration.value
+  ).resumable)
+  if (resumeOpen.value) {
+    videoContext.pause()
+  }
 }
 
 function onPlay(): void {
+  if (resumeOpen.value) {
+    videoContext?.pause()
+    return
+  }
   playbackBegun.value = true
   lifecycle?.onPlaybackBegin()
 }
 
 function onTimeUpdate(event: Event): void {
+  // App's native video reports duration in timeupdate, without loadedmetadata.
+  if (!metadataReady.value && supportsPrivilegedPlayerHeaders() && readDuration(event, 0) > 0) {
+    onLoadedMetadata(event)
+  }
+  if (resumeOpen.value) {
+    return
+  }
   currentTime.value = readCurrentTime(event, currentTime.value)
   duration.value = readDuration(event, duration.value)
   lifecycle?.onTimeUpdate(currentTime.value, duration.value)
@@ -179,6 +197,7 @@ function onTimeUpdate(event: Event): void {
 }
 
 function onPause(event: Event): void {
+  if (resumeOpen.value) return
   updateCurrentPlayback(event)
   lifecycle?.onPause(currentTime.value, duration.value)
   reloadProgress()
@@ -295,6 +314,7 @@ function goBack(): void {
 }
 
 function saveLifecycle(trigger: 'hide' | 'unload'): void {
+  if (resumeOpen.value) return
   if (trigger === 'hide') {
     lifecycle?.onHide(currentTime.value, duration.value)
   } else {
@@ -423,6 +443,7 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
     <main class="player-content">
       <view v-if="status === 'ready'" class="player-stage">
         <video
+          v-show="!resumeOpen"
           :id="VIDEO_CONTEXT_ID"
           data-testid="player-video"
           class="player-video"
@@ -502,7 +523,7 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
     </main>
 
     <ResumeDialog
-      :open="resumeOpen && metadataReady && !playbackBegun"
+      :open="resumeOpen && metadataReady"
       :progress="savedProgress"
       @continue="continuePlayback"
       @restart="restartPlayback"
@@ -515,7 +536,7 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
 
 .player-page {
   min-height: 100vh;
-  padding: max(24rpx, env(safe-area-inset-top)) 24rpx 48rpx;
+  padding: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx) 24rpx 48rpx;
   box-sizing: border-box;
   background: $color-bg;
 }
@@ -573,14 +594,19 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
 }
 
 .player-stage {
+  position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: 0;
+  padding-bottom: 56.25%;
   overflow: hidden;
   border-radius: $radius-card;
   background: $color-player;
 }
 
 .player-video {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
 }
@@ -621,6 +647,10 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
 
 .player-action,
 .player-rate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.3;
   margin: 0;
   border-radius: $radius-control;
 }
@@ -664,6 +694,10 @@ function expireAuthorizationIfNeeded(error: unknown): boolean {
 }
 
 .player-rate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.3;
   min-width: 78rpx;
   min-height: 60rpx;
   padding: 6rpx 12rpx;

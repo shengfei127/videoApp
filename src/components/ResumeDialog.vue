@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Play, RotateCcw } from 'lucide-vue-next'
+import { Play, RotateCcw } from '@/components/icons'
 
 import type { PlaybackProgress } from '@/domain/video'
 import { classifyProgress } from '@/features/playback/progressPolicy'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Film } from 'lucide-vue-next'
+import { Film } from '@/components/icons'
 
 const props = defineProps<{
   src?: string
@@ -134,7 +134,8 @@ function isQueryKeyCharacter(charCode: number): boolean {
   position: relative;
   box-sizing: border-box;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: 0;
+  padding-bottom: 56.25%;
   overflow: hidden;
   border-radius: $radius-control;
   background: $color-player;
@@ -142,6 +143,9 @@ function isQueryKeyCharacter(charCode: number): boolean {
 
 .video-thumbnail__image,
 .video-thumbnail__fallback {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: flex;
   width: 100%;
   height: 100%;

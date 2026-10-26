@@ -1,3 +1,4 @@
+import packageMetadata from '../../package.json'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -23,7 +24,7 @@ describe('Settings page', () => {
 
     expect(source).toContain('__PIANKE_APP_VERSION__')
     expect(source).not.toMatch(/APP_VERSION\s*=\s*['"]\d/u)
-    expect(wrapper.text()).toContain('版本 1.0.0')
+    expect(wrapper.text()).toContain('版本 ' + packageMetadata.version)
   })
 
   it('shows source metadata and privacy state without rendering credentials or URLs', () => {
@@ -61,7 +62,7 @@ describe('Settings page', () => {
     expect(wrapper.text()).toContain('上次目录缓存')
     expect(wrapper.text()).toContain('2029')
     expect(wrapper.text()).toContain('播放进度和媒体直链仅保存在本机')
-    expect(wrapper.text()).toContain('1.0.0')
+    expect(wrapper.text()).toContain(packageMetadata.version)
 
     for (const secret of [
       privateToken,

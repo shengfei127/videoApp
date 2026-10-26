@@ -37,14 +37,14 @@ npm run e2e
 ```dotenv
 VITE_BAIDU_APP_KEY=your-new-app-key
 VITE_BAIDU_APP_FOLDER=片刻
-VITE_BAIDU_REDIRECT_URI=https://localhost/pianke/oauth/baidu
+VITE_BAIDU_REDIRECT_URI=https://openapi.baidu.com/oauth/2.0/login_success
 VITE_USE_MOCKS=false
 ```
 
-在百度开放平台中，授权回调必须逐字登记为：
+默认使用百度提供的登录完成页作为回调，App 在导航到该地址前拦截并校验 state：
 
 ```text
-https://localhost/pianke/oauth/baidu
+https://openapi.baidu.com/oauth/2.0/login_success
 ```
 
 此前在截图、聊天记录或其他公开位置出现过的凭证，必须在真实联调前删除并重新创建。新 AppKey 只保存在本机 `.env.local`；不要把 SecretKey、SignKey、Access Token 或带 token 的播放 URL 放进仓库、日志、截图或构建产物。
@@ -60,6 +60,12 @@ https://localhost/pianke/oauth/baidu
 百度原文件 `dlink` 播放需要在地址中附加 `access_token`，请求头设置 `User-Agent: pan.baidu.com`，并正确跟随百度返回的 302 跳转。片刻只在 App 平台设置该受限请求头；H5 浏览器禁止自定义 `User-Agent`，因此 H5 mock、单元测试和构建成功都不能证明 Android 原文件已经可播放。
 
 发布前必须在真实 Android 设备上验证 uni-app 原生 `<video>` 是否完整转发请求头并跟随 302。若设备端未满足这两个条件，需要先改用经过安全审查的原生播放插件或原生请求方案；不得通过日志、截图或中转服务暴露 token。本项目尚未完成这项实机验证。
+
+## Android 播放与续播验证
+
+2026-10-26 已在 Android 11 模拟器验证原生公开视频播放、本机进度保存、重启后的续播提示以及跳转到保存位置。App 原生播放器通过首次有效 `timeupdate` 获取时长；未选择续播前不会覆盖旧记录。播放器和缩略图使用兼容旧版 WebView 的 16:9 布局。
+
+自动化验证覆盖百度视频解析、续播选择及进度保存。真实百度账号的原文件请求头、302 跳转和实际播放仍需账号实测，不能由公开视频验证代替。
 
 ## Android APK
 

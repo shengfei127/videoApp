@@ -1,3 +1,4 @@
+vi.mock('@dcloudio/uni-app', async () => ({ onReady: (await import('vue')).onMounted }))
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

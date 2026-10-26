@@ -116,7 +116,7 @@ describe('parseRuntimeConfig', () => {
       parseRuntimeConfig({
         VITE_BAIDU_REDIRECT_URI: 'https://localhost/pianke/oauth/baidu'
       }).baiduRedirectUri
-    ).toBe('https://localhost/pianke/oauth/baidu')
+    ).toBe('https://openapi.baidu.com/oauth/2.0/login_success')
   })
 
   it('rejects control characters before normalizing a folder', () => {
@@ -162,7 +162,7 @@ describe('parseRuntimeConfig', () => {
   ])('falls back from an unsafe callback URL: %s', (callback) => {
     expect(
       parseRuntimeConfig({ VITE_BAIDU_REDIRECT_URI: callback }).baiduRedirectUri
-    ).toBe('https://localhost/pianke/oauth/baidu')
+    ).toBe('https://openapi.baidu.com/oauth/2.0/login_success')
   })
 
   it('does not normalize whitespace around the callback URL', () => {
@@ -170,7 +170,7 @@ describe('parseRuntimeConfig', () => {
       parseRuntimeConfig({
         VITE_BAIDU_REDIRECT_URI: ' https://localhost/pianke/oauth/baidu '
       }).baiduRedirectUri
-    ).toBe('https://localhost/pianke/oauth/baidu')
+    ).toBe('https://openapi.baidu.com/oauth/2.0/login_success')
   })
 
   it('enables explicit mocks only for an H5 dev server', () => {

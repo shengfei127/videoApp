@@ -1,3 +1,7 @@
+// The App service engine does not provide browser URL globals.
+import 'core-js/actual/url'
+import 'core-js/actual/url-search-params'
+
 import { createPinia } from 'pinia'
 import { createSSRApp } from 'vue'
 

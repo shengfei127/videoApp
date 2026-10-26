@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { House, LibraryBig, Settings } from 'lucide-vue-next'
+import { House, LibraryBig, Settings } from '@/components/icons'
 
 type NavKey = 'home' | 'library' | 'settings'
 
