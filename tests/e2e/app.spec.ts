@@ -59,7 +59,7 @@ async function acceptNativeModal(page: Page): Promise<void> {
 
 test('first-run home keeps history empty and source actions remain reachable', async ({ page }) => {
   await openScenario(page, 'first-run', '/pages/home/index')
-  await expect(page.getByText('最近看过', { exact: true })).toBeVisible()
+  await expect(page.getByText('最近看过', { exact: true })).toHaveCount(0)
   await expect(page.locator('.home-sources')).toHaveCount(0)
   await page.locator('.bottom-nav').getByLabel('视频库').click()
   await expect(page.getByTestId('library-add')).toBeVisible()
@@ -114,12 +114,12 @@ test('library switches views and filters a Chinese video title', async ({ page }
   ).toHaveCount(0)
 })
 
-test('home recent videos only show records after a video has played', async ({ page }) => {
+test('home hides empty history and avoids repeating the current resume video', async ({ page }) => {
   await mockBaiduPlayback(page)
   await openScenario(page, 'library', '/pages/home/index')
 
   const recentSection = page.locator('[data-home-section="recent"]')
-  await expect(recentSection.getByText('看过视频后会显示在这里')).toBeVisible()
+  await expect(recentSection).toHaveCount(0)
   await expect(recentSection.locator('.video-row')).toHaveCount(0)
 
   await page.locator('.bottom-nav__item').nth(1).click()
@@ -157,10 +157,8 @@ test('home recent videos only show records after a video has played', async ({ p
 
   await page.locator('[data-testid="player-back"]').click()
   await page.locator('.bottom-nav__item').nth(0).click()
-  await expect(recentSection.locator('.video-row')).toHaveCount(1)
-  await expect(
-    recentSection.locator('[aria-label="播放视频：第2站·海边.mp4"]')
-  ).toBeVisible()
+  await expect(recentSection).toHaveCount(0)
+  await expect(page.locator('[data-home-section="continue"]')).toContainText('第2站·海边.mp4')
   await expect(
     recentSection.locator('[aria-label="播放视频：城市漫步.mp4"]')
   ).toHaveCount(0)

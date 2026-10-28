@@ -232,7 +232,7 @@ function clearPendingSafely(): void {
 @use '@/styles/tokens.scss' as *;
 .oauth-page { box-sizing: border-box; min-height: 100vh; padding: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 22rpx) 40rpx 40rpx; background: $color-surface; }
 .oauth-header { display: flex; align-items: center; min-height: 80rpx; }
-.oauth-icon-button { display: flex; width: 38rpx; height: 70rpx; align-items: center; justify-content: center; margin: 0 20rpx 0 0; padding: 0; border: 0; background: transparent; }
+.oauth-icon-button { box-sizing: border-box; flex: 0 0 auto; min-width: 44px; min-height: 44px; display: flex; width: 38rpx; height: 70rpx; align-items: center; justify-content: center; margin: 0 20rpx 0 0; padding: 0; border: 0; background: transparent; }
 .oauth-header__title { font-size: 30rpx; font-weight: 650; }
 .oauth-content { display: flex; flex-direction: column; align-items: center; padding-top: 100rpx; }
 .oauth-cloud { position: relative; width: 230rpx; height: 190rpx; margin-bottom: 65rpx; }
@@ -246,7 +246,7 @@ function clearPendingSafely(): void {
 .oauth-status { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .oauth-status__title { color: $color-text; font-size: 34rpx; font-weight: 650; line-height: 1.45; }
 .oauth-status__detail { margin-top: 12rpx; color: $color-muted; font-size: 26rpx; }
-.oauth-action { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 94rpx; margin: 48rpx 0 0; border: 0; border-radius: 999px; color: #fff; font-size: 30rpx; font-weight: 600; background: $color-primary; }
+.oauth-action { box-sizing: border-box; padding: 14rpx 24rpx; white-space: normal; overflow-wrap: anywhere; text-align: center; line-height: 1.4; display: flex; align-items: center; justify-content: center; width: 100%; min-height: max(44px, 94rpx); margin: 48rpx 0 0; border: 0; border-radius: 999px; color: #fff; font-size: 30rpx; font-weight: 600; background: $color-primary; }
 .oauth-action:disabled { opacity: .65; }
 .oauth-sync-symbol, .oauth-status__spinner { margin: 34rpx 0; opacity: .55; }
 .oauth-status__spinner { animation: oauth-spin .9s linear infinite; }

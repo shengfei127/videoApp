@@ -27,6 +27,18 @@ function course(createdAt: number, episodes = 3) {
 }
 
 describe('dailyUnlockPolicy', () => {
+  it('starts at the selected episode without scheduling earlier episodes', () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const plan = { ...course(now, 15), startEpisodeNumber: 11 }
+    expect(getTodayCourseEpisodes(plan, now).map((episode) => episode.videoId)).toEqual(['video-11'])
+    expect(getUnlockedEpisodeCount(plan, now)).toBe(11)
+    expect(getVideoUnlockStatus({ enabled: true, courses: [plan] }, 'video-1', now).locked).toBe(false)
+    expect(getVideoUnlockStatus({ enabled: true, courses: [plan] }, 'video-12', now).unlockAt).toBe(new Date(2026, 9, 29).getTime())
+    expect(getTodayCourseEpisodes(plan, new Date(2026, 9, 29).getTime())[0]?.videoId).toBe('video-12')
+    const changed = rescheduleDailyUnlockCourse(plan, { dailyEpisodeCount: 2 }, now)
+    expect(getTodayCourseEpisodes(changed, now)[0]?.videoId).toBe('video-11')
+    expect(getTodayCourseEpisodes(changed, new Date(2026, 9, 29).getTime()).map((episode) => episode.videoId)).toEqual(['video-12', 'video-13'])
+  })
   it('supports several daily episodes and a partial final day', () => {
     const plan = { ...course(new Date(2026, 9, 27, 8).getTime(), 5), dailyEpisodeCount: 2 }
     expect(getTodayCourseEpisodes(plan, new Date(2026, 9, 27, 12).getTime()).map((item) => item.videoId)).toEqual(['video-1', 'video-2'])

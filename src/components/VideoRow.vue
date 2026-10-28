@@ -11,6 +11,7 @@ const props = defineProps<{
   durationSeconds?: number
   unlockStatus?: VideoUnlockStatus
   display?: 'row' | 'card' | 'history'
+  hideMetadata?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -122,13 +123,13 @@ function padTime(value: number): string {
         :src="video?.thumbnailUrl"
         :name="displayName"
       />
-      <text v-if="display && durationLabel" class="video-row__duration">{{ durationLabel }}</text>
+      <text v-if="display && durationLabel && !hideMetadata" class="video-row__duration">{{ durationLabel }}</text>
     </view>
     <view class="video-row__content">
       <text class="video-row__name video-row__name--two-lines">
         {{ displayName }}
       </text>
-      <text class="video-row__metadata" :title="display === 'card' ? cardMetadata : metadata">
+      <text v-if="!hideMetadata" class="video-row__metadata" :title="display === 'card' ? cardMetadata : metadata">
         <template v-if="display === 'card'">{{ durationLabel || '—' }}　▰ {{ cardMetadata }}</template>
         <template v-else-if="display === 'history'">{{ cardMetadata }}</template>
         <template v-else>{{ metadata }}</template>

@@ -3,6 +3,7 @@ import { getTodayCourseEpisodes, getUnlockedEpisodeCount } from './dailyUnlockPo
 
 export interface LearningLesson {
   id: string
+  courseId: string
   courseName: string
   episodeNumber: number
   name: string
@@ -28,7 +29,7 @@ export function buildLearningPlan(settings: DailyUnlockSettings, now: number, vi
     const duration = progress && progress.durationSeconds > 0 ? progress.durationSeconds : video?.durationSeconds
     const position = Math.max(0, progress?.positionSeconds ?? 0)
     return {
-      id: episode.videoId, courseName: course.name, episodeNumber: index + 1,
+      id: episode.videoId, courseId: course.id, courseName: course.name, episodeNumber: index + 1,
       name: episode.name, video, completed: progress?.completed === true, positionSeconds: position,
       remainingSeconds: duration !== undefined && Number.isFinite(duration) && duration > 0
         ? progress?.completed ? 0 : Math.max(0, duration - position) : undefined
@@ -39,6 +40,7 @@ export function buildLearningPlan(settings: DailyUnlockSettings, now: number, vi
     const tomorrowIds = new Set(getTodayCourseEpisodes(course, nextDay).map((episode) => episode.videoId))
     const unlocked = getUnlockedEpisodeCount(course, now)
     course.episodes.forEach((episode, index) => {
+      if (index < (course.startEpisodeNumber ?? 1) - 1) return
       if (todayIds.has(episode.videoId)) today.push(lesson(course, index))
       else if (index < unlocked && !progressById.get(episode.videoId)?.completed) backlog.push(lesson(course, index))
       if (tomorrowIds.has(episode.videoId)) tomorrow.push(lesson(course, index))

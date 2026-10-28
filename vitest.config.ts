@@ -4,7 +4,7 @@ import { configDefaults, defineConfig } from 'vitest/config'
 import packageMetadata from './package.json'
 
 export default defineConfig({
-  plugins: [vue({ template: { compilerOptions: { isCustomElement: (tag) => ['slider', 'cover-view', 'cover-image'].includes(tag) } } })],
+  plugins: [vue({ template: { compilerOptions: { isCustomElement: (tag) => ['slider', 'scroll-view', 'cover-view', 'cover-image'].includes(tag) } } })],
   define: {
     __PIANKE_APP_VERSION__: JSON.stringify(packageMetadata.version)
   },

@@ -7,6 +7,8 @@ export interface PlayerLifecycleOptions {
     updatedAt: number
   ) => unknown
   now?: () => number
+  onSaveError?: () => void
+  onSaved?: () => void
 }
 
 const SAVE_INTERVAL_MS = 5_000
@@ -18,6 +20,7 @@ export class PlayerLifecycle {
   private playbackBegun = false
   private lastSavedAt: number | null = null
   private lastSavedPosition: number | null = null
+  private saveFailed = false
 
   constructor(private readonly options: PlayerLifecycleOptions) {
     this.now = options.now ?? Date.now
@@ -50,8 +53,8 @@ export class PlayerLifecycle {
     const position = clampPosition(positionSeconds, this.metadataDuration)
     const now = this.now()
     if (
-      this.lastSavedPosition === position ||
-      (this.lastSavedAt !== null && now - this.lastSavedAt < SAVE_INTERVAL_MS)
+      !this.saveFailed && (this.lastSavedPosition === position ||
+      (this.lastSavedAt !== null && now - this.lastSavedAt < SAVE_INTERVAL_MS))
     ) {
       return
     }
@@ -116,14 +119,18 @@ export class PlayerLifecycle {
   }
 
   private save(positionSeconds: number, updatedAt: number): void {
-    this.options.save(
-      this.options.videoId,
-      positionSeconds,
-      this.metadataDuration,
-      updatedAt
-    )
+    try {
+      const result = this.options.save(this.options.videoId, positionSeconds, this.metadataDuration, updatedAt)
+      if (result === false) throw new Error('Progress save failed')
+    } catch {
+      this.saveFailed = true
+      this.options.onSaveError?.()
+      return
+    }
+    this.saveFailed = false
     this.lastSavedAt = updatedAt
     this.lastSavedPosition = positionSeconds
+    this.options.onSaved?.()
   }
 }
 

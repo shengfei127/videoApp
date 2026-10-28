@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { PlayerLifecycle } from '@/features/playback/playerLifecycle'
 
 describe('PlayerLifecycle', () => {
+  it('keeps playback alive after a failed save and retries the same position without marking it saved', () => {
+    const save = vi.fn().mockImplementationOnce(() => { throw new Error('quota') }).mockReturnValue(undefined)
+    const onSaveError = vi.fn()
+    const onSaved = vi.fn()
+    const lifecycle = new PlayerLifecycle({ videoId: 'video-1', save, onSaveError, onSaved, now: () => 1000 })
+    lifecycle.onMetadata(600)
+    lifecycle.onPlaybackBegin()
+    expect(() => lifecycle.onHide(120, 600)).not.toThrow()
+    expect(onSaveError).toHaveBeenCalledOnce()
+    expect(onSaved).not.toHaveBeenCalled()
+    lifecycle.onTimeUpdate(120, 600)
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(onSaved).toHaveBeenCalledOnce()
+  })
+
   it('does not persist before both metadata and playback have begun', () => {
     const save = vi.fn()
     const lifecycle = new PlayerLifecycle({

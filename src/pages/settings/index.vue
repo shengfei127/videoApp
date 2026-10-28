@@ -14,16 +14,46 @@ import {
 } from '@/components/icons'
 
 import BottomNav from '@/components/BottomNav.vue'
+import LearningRecoveryNotice from '@/components/LearningRecoveryNotice.vue'
+import BackupPanel from '@/components/BackupPanel.vue'
 import { runtimeConfig } from '@/config/runtime'
 import { getNextCourseUnlockAt } from '@/features/daily-unlock/dailyUnlockPolicy'
 import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 import { useAppStore } from '@/stores/appStore'
+import type { StorageAudit } from '@/features/playback/storageAudit'
 
 const appVersion = __PIANKE_APP_VERSION__
 const store = useAppStore()
 const expandedSection = ref('')
+const storageAudit = ref<StorageAudit | null>(null)
+const storageAuditError = ref('')
+const storageAuditResult = ref('')
+function inspectStorage(): void {
+  storageAuditResult.value = ''
+  storageAudit.value = store.inspectLearningStorage()
+  storageAuditError.value = storageAudit.value ? '' : '读取存储信息失败，请重试'
+}
+function compactStorage(): void {
+  const result = store.compactLearningStorage()
+  storageAuditResult.value = ''
+  if (!result) {
+    storageAuditError.value = '整理失败，请重试；未确认完成清理'
+    return
+  }
+  storageAudit.value = result
+  storageAuditError.value = ''
+  storageAuditResult.value = result.removedRecords > 0
+    ? `已清理 ${result.removedRecords} 条完全重复记录，节省 ${formatStorageBytes(result.savedBytes)}。学习状态和播放历史已保留。`
+    : '没有需要清理的重复记录，学习状态和播放历史已保留。'
+}
+function formatStorageBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 function toggleSection(section: string): void {
   expandedSection.value = expandedSection.value === section ? '' : section
+  if (expandedSection.value === 'local') inspectStorage()
 }
 
 const connectionStatus = computed(() =>
@@ -72,6 +102,11 @@ function openDailyUnlockManager(): void {
     url: '/pages/daily-unlock/index',
     animationType: 'slide-in-bottom'
   })
+}
+
+function refreshLearningData(): void {
+  store.reloadDailyUnlockSettings()
+  store.reloadProgress()
 }
 
 function connectBaidu(): void {
@@ -325,7 +360,7 @@ function formatDateTime(value: number): string {
       </section>
 
       <section class="settings-section" aria-labelledby="settings-local-title">
-        <button class="settings-menu-row" :aria-expanded="expandedSection === 'local'" @click="toggleSection('local')">
+        <button class="settings-menu-row" data-testid="settings-local" :aria-expanded="expandedSection === 'local'" @click="toggleSection('local')">
           <Folder :size="23" aria-hidden="true" />
           <view class="settings-menu-row__copy"><text id="settings-local-title">本地数据</text><text class="settings-menu-row__detail">视频缓存与存储</text></view>
           <ChevronRight :size="18" aria-hidden="true" />
@@ -351,6 +386,20 @@ function formatDateTime(value: number): string {
             </text>
           </view>
         </view>
+        <view class="settings-storage-audit" data-testid="storage-audit">
+          <text class="settings-storage-audit__title">学习数据存储</text>
+          <template v-if="storageAudit">
+            <text>播放记录 {{ storageAudit.playbackRecords }} 条 · 学习记录 {{ storageAudit.learningRecords }} 条</text>
+            <text>课程与记录约占 {{ formatStorageBytes(storageAudit.bytes) }} · 完全重复 {{ storageAudit.duplicateRecords }} 条</text>
+          </template>
+          <text>仅整理完全重复的记录，保留学习状态、播放历史和课程安排，不按时间删除旧记录。</text>
+          <text v-if="storageAuditError" class="settings-storage-audit__error" role="alert">{{ storageAuditError }}</text>
+          <text v-if="storageAuditResult" role="status" data-testid="storage-audit-result">{{ storageAuditResult }}</text>
+          <view class="settings-action-row">
+            <button class="settings-action settings-action--secondary" data-testid="storage-inspect" @click="inspectStorage">刷新统计</button>
+            <button v-if="storageAudit && storageAudit.duplicateRecords > 0" class="settings-action settings-action--secondary" data-testid="storage-compact" @click="compactStorage">清理重复记录</button>
+          </view>
+        </view>
         <view class="settings-action-row">
           <button
             type="button"
@@ -374,6 +423,16 @@ function formatDateTime(value: number): string {
           </button>
         </view>
         </view>
+      </section>
+
+      <LearningRecoveryNotice />
+      <section class="settings-section" aria-labelledby="settings-backup-title">
+        <button class="settings-menu-row" data-testid="settings-backup" :aria-expanded="expandedSection === 'backup'" @click="toggleSection('backup')">
+          <Database :size="23" aria-hidden="true" />
+          <view class="settings-menu-row__copy"><text id="settings-backup-title">学习数据备份</text><text class="settings-menu-row__detail">导出与恢复课程、学习状态和播放进度</text></view>
+          <ChevronRight :size="18" aria-hidden="true" />
+        </button>
+        <view v-if="expandedSection === 'backup'" class="settings-expanded"><BackupPanel @restored="refreshLearningData" /></view>
       </section>
 
       <section class="settings-section" aria-labelledby="settings-privacy-title">
@@ -407,6 +466,11 @@ function formatDateTime(value: number): string {
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
+.settings-storage-audit { display: flex; flex-direction: column; padding: 18rpx 0; color: $color-muted; font-size: 23rpx; line-height: 1.6; overflow-wrap: anywhere; }
+.settings-storage-audit > * + * { margin-top: 10rpx; }
+.settings-storage-audit__title { color: $color-text; font-weight: 600; }
+.settings-storage-audit__error { color: #a43b2c; }
+.settings-storage-audit .settings-action { min-height: 44px; white-space: normal; }
 
 .settings-page {
   padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx);
@@ -486,7 +550,6 @@ function formatDateTime(value: number): string {
   justify-content: space-between;
 }
 
-.daily-unlock-switch { margin-left: 18rpx; }
 
 .daily-unlock-copy {
   display: flex;
@@ -519,37 +582,56 @@ function formatDateTime(value: number): string {
 
 .daily-unlock-status > * + * { margin-top: 4rpx; }
 
+/* Keep the visual track compact inside a 44px touch target. */
 .daily-unlock-switch {
+  box-sizing: border-box;
   position: relative;
-  flex: 0 0 auto;
-  width: 92rpx;
-  height: 52rpx;
-  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 44px;
+  min-height: 44px;
+  margin: 0 0 0 18rpx;
   padding: 0;
   border: 0;
   border-radius: 999px;
+  background: transparent;
+}
+
+.daily-unlock-switch::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 32px;
+  border-radius: 999px;
   background: #c9cfca;
+  content: '';
+  transform: translateY(-50%);
   transition: background-color 160ms ease;
 }
 
-.daily-unlock-switch--on {
+.daily-unlock-switch--on::before {
   background: $color-primary;
 }
 
 .daily-unlock-switch__thumb {
   position: absolute;
-  top: 6rpx;
-  left: 6rpx;
-  width: 40rpx;
-  height: 40rpx;
+  top: 50%;
+  left: 4px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 2rpx 8rpx rgba(26, 41, 34, 0.2);
-  transition: transform 160ms ease;
+  transform: translateY(-50%);
+  transition: left 160ms ease;
 }
 
 .daily-unlock-switch--on .daily-unlock-switch__thumb {
-  transform: translateX(40rpx);
+  left: calc(100% - 28px);
 }
 
 .daily-unlock-manage {
@@ -605,12 +687,15 @@ function formatDateTime(value: number): string {
 }
 
 .settings-action {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  min-height: 74rpx;
+  min-height: max(44px, 74rpx);
   margin: 6rpx;
   padding: 12rpx 18rpx;
   border: 1px solid $color-border;
@@ -678,8 +763,8 @@ function formatDateTime(value: number): string {
 
 .settings-content { margin-top: 12rpx; }
 .settings-header { min-height: 78rpx; }
-.settings-menu-row { display: flex; align-items: center; width: 100%; min-height: 132rpx; margin: 0; padding: 24rpx 0; border: 0; border-bottom: 1px solid rgba($color-border, .65); border-radius: 0; color: $color-text; text-align: left; background: transparent; line-height: 1.35; }
-.settings-menu-row__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; margin: 0 28rpx; font-size: 27rpx; font-weight: 600; }
+.settings-menu-row { box-sizing: border-box; white-space: normal; display: flex; align-items: center; width: 100%; min-height: 132rpx; margin: 0; padding: 24rpx 0; border: 0; border-bottom: 1px solid rgba($color-border, .65); border-radius: 0; color: $color-text; text-align: left; background: transparent; line-height: 1.35; }
+.settings-menu-row__copy { overflow-wrap: anywhere; display: flex; min-width: 0; flex: 1; flex-direction: column; margin: 0 28rpx; font-size: 27rpx; font-weight: 600; }
 .settings-menu-row__detail { margin-top: 5rpx; color: $color-muted; font-size: 22rpx; font-weight: 400; }
 .settings-menu-row--short { min-height: 98rpx; border-bottom: 0; padding: 20rpx 0; }
 .settings-expanded { padding: 8rpx 0 24rpx; }

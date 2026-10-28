@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { Play, Search } from '@/components/icons'
 
 import BottomNav from '@/components/BottomNav.vue'
+import LearningRecoveryNotice from '@/components/LearningRecoveryNotice.vue'
+import FirstLearningGuide from '@/components/FirstLearningGuide.vue'
 import VideoRow from '@/components/VideoRow.vue'
 import VideoThumbnail from '@/components/VideoThumbnail.vue'
 import type { VideoItem } from '@/domain/video'
@@ -14,9 +16,21 @@ import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 
 const store = useAppStore()
 useDailyUnlockClock((now) => store.refreshDailyUnlockClock(now))
-const backlogOpen = ref(false)
+const expandedCourses = ref<Set<string>>(new Set())
+const guideVisible = ref(true)
+const backlogLimits = ref<Record<string, number>>({})
+function backlogLimit(id: string): number { return backlogLimits.value[id] ?? 20 }
+function showMoreBacklog(id: string): void { backlogLimits.value = { ...backlogLimits.value, [id]: backlogLimit(id) + 20 } }
+const undoLesson = ref<{ id: string; name: string }>()
+let undoTimer: ReturnType<typeof setTimeout> | undefined
+function dismissUndo(): void {
+  if (undoTimer !== undefined) clearTimeout(undoTimer)
+  undoTimer = undefined
+  undoLesson.value = undefined
+}
+onUnmounted(dismissUndo)
 const tomorrowOpen = ref(false)
-const plan = computed(() => buildLearningPlan(store.dailyUnlockSettings, store.dailyUnlockNow, store.mergedVideos, store.progressHistory))
+const plan = computed(() => buildLearningPlan(store.dailyUnlockSettings, store.dailyUnlockNow, store.mergedVideos, store.learningHistory))
 const todayLessons = computed(() => plan.value.today)
 const continuingBacklog = computed(() => {
   const updatedAt = new Map(store.progressHistory.map((progress) => [progress.videoId, progress.updatedAt]))
@@ -24,6 +38,23 @@ const continuingBacklog = computed(() => {
     .sort((a, b) => (updatedAt.get(b.id) ?? 0) - (updatedAt.get(a.id) ?? 0))[0]
 })
 const remainingBacklog = computed(() => plan.value.backlog.filter((lesson) => lesson.id !== continuingBacklog.value?.id))
+const backlogGroups = computed(() => {
+  const groups = new Map<string, { id: string; name: string; lessons: LearningLesson[] }>()
+  for (const lesson of remainingBacklog.value) {
+    if (!groups.has(lesson.courseId)) groups.set(lesson.courseId, { id: lesson.courseId, name: lesson.courseName, lessons: [] })
+    groups.get(lesson.courseId)!.lessons.push(lesson)
+  }
+  return [...groups.values()]
+})
+function toggleBacklogCourse(id: string): void {
+  const next = new Set(expandedCourses.value)
+  if (next.has(id)) {
+    next.delete(id)
+    backlogLimits.value = { ...backlogLimits.value, [id]: 20 }
+  }
+  else next.add(id)
+  expandedCourses.value = next
+}
 const todayComplete = computed(() => todayLessons.value.length > 0 && todayLessons.value.every((lesson) => lesson.completed))
 const todaySummary = computed(() => {
   const pending = todayLessons.value.filter((lesson) => !lesson.completed)
@@ -40,8 +71,19 @@ const todayEmptyText = computed(() => !store.dailyUnlockSettings.enabled
       ? '学习计划已暂停，可在设置中恢复；已开放内容仍可补学'
       : '今天没有新课程，可前往视频库复习已学内容')
 function markLearned(lesson: LearningLesson): void {
+  const isBacklog = plan.value.backlog.some((item) => item.id === lesson.id)
   const saved = store.markVideoLearned(lesson.id, !lesson.completed)
+  if (saved && isBacklog && !lesson.completed) {
+    dismissUndo()
+    undoLesson.value = { id: lesson.id, name: lesson.name }
+    undoTimer = setTimeout(dismissUndo, 8000)
+  }
   uni.showToast({ title: saved ? lesson.completed ? '已撤销学完' : '已标记学完' : '保存失败，请稍后重试', icon: 'none' })
+}
+function undoCompletion(): void {
+  if (!undoLesson.value) return
+  if (store.markVideoLearned(undoLesson.value.id, false)) dismissUndo()
+  else uni.showToast({ title: '撤销失败，请稍后重试', icon: 'none' })
 }
 
 const resumeItems = computed<ContinueWatchingItem[]>(() => {
@@ -95,6 +137,9 @@ function openPlayer(video: VideoItem): void {
   uni.navigateTo({
     url: `/pages/player/index?id=${encodeURIComponent(id)}`
   })
+}
+function reviewLesson(video: VideoItem): void {
+  if (video.id) uni.navigateTo({ url: `/pages/player/index?id=${encodeURIComponent(video.id)}&restart=1` })
 }
 
 function safeVideoName(video: VideoItem | undefined): string {
@@ -153,6 +198,7 @@ function padTime(value: number): string {
     </view>
 
     <view v-if="safeLastErrorText" class="home-error-band" role="status" aria-live="polite">{{ safeLastErrorText }}</view>
+    <LearningRecoveryNotice />
 
     <view class="home-section home-today" :class="{ 'home-today--after-resume': !store.dailyUnlockSettings.enabled && continueItem }" data-home-section="today" role="region" aria-labelledby="today-learning-title">
       <view class="home-section-heading">
@@ -162,23 +208,34 @@ function padTime(value: number): string {
       <text v-if="todayLessons.length" class="home-today__summary">{{ todaySummary }}</text>
       <view v-if="continuingBacklog" class="home-learning-extra" data-testid="continue-learning">
         <text class="home-today__summary">接着上次的内容继续学习</text>
-        <LearningLessonCard :lesson="continuingBacklog" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+        <LearningLessonCard :lesson="continuingBacklog" @play="openPlayer" @review="reviewLesson" @complete="markLearned" @library="openSource('/pages/library/index')" />
       </view>
       <view v-if="todayComplete" class="home-learning-done" role="status">
         <text>今日学习已完成</text><text>今天的安排已经学完，随时可以回来复习。</text>
       </view>
       <view v-if="todayLessons.length" class="home-today__list">
-        <LearningLessonCard v-for="lesson in todayLessons" :key="lesson.id" :lesson="lesson" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+        <LearningLessonCard v-for="lesson in todayLessons" :key="lesson.id" :lesson="lesson" @play="openPlayer" @review="reviewLesson" @complete="markLearned" @library="openSource('/pages/library/index')" />
       </view>
-      <view v-else class="home-empty-band" role="status">
+      <view v-else>
+        <FirstLearningGuide :has-videos="store.mergedVideos.length > 0" :has-courses="store.dailyUnlockSettings.courses.length > 0" @visibility-change="guideVisible = $event" />
+        <view v-if="!guideVisible" class="home-empty-band" role="status">
         <text>{{ todayEmptyText }}</text>
         <button class="home-learning-action" @click="openSource('/pages/settings/index')">设置学习计划</button>
+        </view>
+      </view>
+      <view v-if="undoLesson" class="home-learning-undo" role="status" data-testid="learning-undo">
+        <text>已标记「{{ undoLesson.name }}」学完</text>
+        <button class="home-learning-link" @click="undoCompletion">撤销</button>
       </view>
       <view v-if="remainingBacklog.length" class="home-learning-extra">
-        <button class="home-learning-disclosure" :aria-expanded="backlogOpen" @click="backlogOpen = !backlogOpen">待补学 · 还有 {{ remainingBacklog.length }} 节未完成 <text>{{ backlogOpen ? '收起' : '展开' }}</text></button>
+        <text class="home-backlog-title">待补学 · 还有 {{ remainingBacklog.length }} 节未完成</text>
         <text class="home-today__summary">按自己的节奏补学，不影响今天的课程</text>
-        <view v-if="backlogOpen" data-testid="backlog-lessons">
-          <LearningLessonCard v-for="lesson in remainingBacklog" :key="lesson.id" :lesson="lesson" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+        <view v-for="group in backlogGroups" :key="group.id" class="home-backlog-group">
+          <button class="home-learning-disclosure" :data-backlog-course="group.id" :aria-expanded="expandedCourses.has(group.id)" @click="toggleBacklogCourse(group.id)">{{ group.name }} · 待补学 {{ group.lessons.length }} 节 <text>{{ expandedCourses.has(group.id) ? '收起' : '展开' }}</text></button>
+          <view v-if="expandedCourses.has(group.id)" data-testid="backlog-lessons">
+            <LearningLessonCard v-for="lesson in group.lessons.slice(0, backlogLimit(group.id))" :key="lesson.id" :lesson="lesson" @play="openPlayer" @review="reviewLesson" @complete="markLearned" @library="openSource('/pages/library/index')" />
+            <button v-if="group.lessons.length > backlogLimit(group.id)" class="home-learning-link" :data-backlog-more="group.id" @click="showMoreBacklog(group.id)">继续显示 · 还有 {{ group.lessons.length - backlogLimit(group.id) }} 节</button>
+          </view>
         </view>
       </view>
       <view v-if="store.dailyUnlockSettings.enabled && store.dailyUnlockSettings.courses.length" class="home-learning-extra">
@@ -212,7 +269,7 @@ function padTime(value: number): string {
       </view>
     </view>
 
-    <view class="home-section home-recent" data-home-section="recent" role="region" aria-labelledby="recent-videos-title">
+    <view v-if="recentVideos.length" class="home-section home-recent" data-home-section="recent" role="region" aria-labelledby="recent-videos-title">
       <view class="home-section-heading">
         <text id="recent-videos-title" class="section-title" role="heading" aria-level="2">最近看过</text>
         <button type="button" class="home-section-heading__more" aria-label="查看全部最近视频" @click="openSource('/pages/library/index')">›</button>
@@ -220,7 +277,6 @@ function padTime(value: number): string {
       <view v-if="recentVideos.length" class="home-recent__list">
         <VideoRow v-for="video in recentVideos" :key="video.id" :video="video" display="history" @select="openPlayer" />
       </view>
-      <view v-else class="home-empty-band" role="status">看过视频后会显示在这里</view>
     </view>
   </view>
   <BottomNav active="home" />
@@ -266,7 +322,7 @@ function padTime(value: number): string {
   line-height: 1.2;
 }
 
-.home-header__icon-button {
+.home-header__icon-button { min-width: 44px; min-height: 44px;
   position: relative;
   display: flex;
   width: 60rpx;
@@ -301,12 +357,16 @@ function padTime(value: number): string {
 .home-today--after-resume { order: 4; }
 .home-recent { order: 5; }
 .home-today__summary { display: block; color: $color-muted; font-size: 22rpx; line-height: 1.5; margin-bottom: 14rpx; }
-.home-learning-link, .home-learning-action { margin: 0; padding: 12rpx 16rpx; border: 0; border-radius: 8px; background: $color-primary-soft; color: $color-primary; font-size: 22rpx; line-height: 1.4; }
+.home-learning-link, .home-learning-action { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 44px; min-width: 44px; margin: 0; padding: 12rpx 16rpx; border: 0; border-radius: 8px; background: $color-primary-soft; color: $color-primary; font-size: 22rpx; line-height: 1.4; }
 .home-learning-action { margin: 16rpx auto 0; width: fit-content; }
 .home-learning-done { display: flex; flex-direction: column; padding: 20rpx; margin-bottom: 14rpx; border-radius: 12px; background: $color-primary-soft; color: $color-primary; font-size: 26rpx; font-weight: 650; }
 .home-learning-done text + text { margin-top: 8rpx; font-size: 22rpx; font-weight: 400; }
+.home-learning-undo { position: fixed; z-index: 30; left: 24rpx; right: 24rpx; bottom: calc(64px + env(safe-area-inset-bottom, 0px)); display: flex; align-items: center; justify-content: space-between; padding: 18rpx; border: 1px solid $color-border; box-shadow: $shadow-panel; background: $color-primary-soft; color: $color-primary; border-radius: 10px; font-size: 22rpx; }
+.home-learning-undo > text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 14rpx; }
+.home-backlog-title { display: block; margin-bottom: 12rpx; color: $color-primary; font-size: 24rpx; }
+.home-backlog-group + .home-backlog-group { border-top: 1px solid $color-border; }
 .home-learning-extra { margin-top: 18rpx; }
-.home-learning-disclosure { width: 100%; display: flex; justify-content: space-between; padding: 18rpx 0; margin: 0; background: transparent; color: $color-primary; border: 0; text-align: left; font-size: 24rpx; line-height: 1.5; }
+.home-learning-disclosure { min-height: 44px; overflow-wrap: anywhere; width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 18rpx 0; margin: 0; background: transparent; color: $color-primary; border: 0; text-align: left; font-size: 24rpx; line-height: 1.5; }
 .home-learning-disclosure > * { margin-left: 12rpx; }
 .home-tomorrow-row > * + * { margin-top: 6rpx; }
 .home-tomorrow-row { display: flex; flex-direction: column; padding: 16rpx; margin-bottom: 10rpx; border-radius: 8px; background: $color-primary-soft; color: $color-text; font-size: 22rpx; overflow-wrap: anywhere; }
@@ -437,6 +497,11 @@ function padTime(value: number): string {
 .home-section-heading .section-title { margin-top: 23rpx; margin-bottom: 10rpx; }
 
 .home-section-heading__more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
   width: 44rpx;
   height: 48rpx;
   margin: 14rpx 0 8rpx;

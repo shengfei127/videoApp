@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { onHide, onLoad, onPageScroll, onReady, onUnload } from '@dcloudio/uni-app'
 import {
   ChevronRight,
   Folder,
@@ -13,11 +13,15 @@ import {
 import BottomNav from '@/components/BottomNav.vue'
 import DirectLinkSheet from '@/components/DirectLinkSheet.vue'
 import VideoRow from '@/components/VideoRow.vue'
-import type { DirectVideoRecord, VideoFolder, VideoItem } from '@/domain/video'
+import type { DailyUnlockCourse, DirectVideoRecord, VideoFolder, VideoItem, VideoUnlockStatus } from '@/domain/video'
 import { DirectLinkService } from '@/features/direct-links/directLinkService'
+import { getVideoUnlockStatus } from '@/features/daily-unlock/dailyUnlockPolicy'
 import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 import { uniStorage } from '@/infrastructure/storage'
+import { readLearningGuideStatus } from '@/features/onboarding/learningGuide'
 import { useAppStore } from '@/stores/appStore'
+
+import { readLibraryPosition, resolveLibraryFolder, saveLibraryPosition } from '@/features/catalog/libraryPosition'
 
 type LibraryView = 'recent' | 'folders'
 
@@ -25,15 +29,26 @@ const LIBRARY_BATCH_SIZE = 50
 const SEARCH_DEBOUNCE_MS = 200
 
 const store = useAppStore()
+const learningGuideRequested = ref(false)
+function continueLearningGuide(): void { uni.navigateTo({ url: '/pages/daily-unlock/index?learningGuide=1' }) }
+function connectLearningSource(): void { uni.navigateTo({ url: '/pages/oauth/index' }) }
+const showLearningGuide = computed(() => learningGuideRequested.value && !store.dailyUnlockSettings.courses.length && readLearningGuideStatus(uniStorage) === 'active')
 const directLinkService = new DirectLinkService(uniStorage)
-const activeView = ref<LibraryView>('recent')
-const activeFolderPath = ref(store.folderTree.path)
-const searchInput = ref(store.searchQuery)
+const restoredPosition = readLibraryPosition(uniStorage)
+const activeView = ref<LibraryView>(restoredPosition?.activeView ?? 'recent')
+const activeFolderPath = ref(restoredPosition?.folderPath || store.folderTree.path)
+const searchInput = ref(restoredPosition?.searchQuery ?? store.searchQuery)
+store.searchQuery = searchInput.value
+let scrollTop = restoredPosition?.scrollTop ?? 0
+let lastSavedPosition = ''
+let positionReady = false
+let pageReady = false
+let restoreTimer: ReturnType<typeof setTimeout> | undefined
 const importOpen = ref(false)
 const editingRecord = ref<DirectVideoRecord | undefined>()
 const refreshing = ref(false)
 const cooldownClock = ref(Date.now())
-const visibleLimit = ref(LIBRARY_BATCH_SIZE)
+const visibleLimit = ref(restoredPosition?.visibleLimit ?? LIBRARY_BATCH_SIZE)
 let cooldownTimer: ReturnType<typeof setTimeout> | undefined
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -44,12 +59,19 @@ const listedVideos = computed(() =>
 const visibleListedVideos = computed(() =>
   listedVideos.value.slice(0, visibleLimit.value)
 )
-const activeFolder = computed(() =>
-  findFolder(store.folderTree, activeFolderPath.value) ?? store.folderTree
-)
-const breadcrumbs = computed(() =>
-  findFolderTrail(store.folderTree, activeFolder.value.path) ?? [store.folderTree]
-)
+const folderIndex = computed(() => {
+  const index = new Map<string, { folder: VideoFolder; trail: VideoFolder[]; count: number }>()
+  const visit = (folder: VideoFolder, parents: VideoFolder[]): number => {
+    const trail = [...parents, folder]
+    const count = folder.videos.length + folder.folders.reduce((total, child) => total + visit(child, trail), 0)
+    index.set(folder.path, { folder, trail, count })
+    return count
+  }
+  visit(store.folderTree, [])
+  return index
+})
+const activeFolder = computed(() => folderIndex.value.get(activeFolderPath.value)?.folder ?? store.folderTree)
+const breadcrumbs = computed(() => folderIndex.value.get(activeFolder.value.path)?.trail ?? [store.folderTree])
 const visibleFolders = computed(() =>
   activeFolder.value.folders.slice(0, visibleLimit.value)
 )
@@ -62,6 +84,24 @@ const visibleFolderVideos = computed(() =>
     Math.max(0, visibleLimit.value - visibleFolders.value.length)
   )
 )
+const courseByVideoId = computed(() => {
+  const result = new Map<string, DailyUnlockCourse>()
+  for (const course of store.dailyUnlockSettings.courses) {
+    for (const episode of course.episodes) result.set(episode.videoId, course)
+  }
+  return result
+})
+const visibleUnlockStatuses = computed(() => {
+  const result = new Map<string, VideoUnlockStatus>()
+  const videos = hasSearch.value || activeView.value === 'recent' ? visibleListedVideos.value : visibleFolderVideos.value
+  for (const video of videos) {
+    const course = courseByVideoId.value.get(video.id)
+    result.set(video.id, course
+      ? getVideoUnlockStatus({ enabled: store.dailyUnlockSettings.enabled, courses: [course] }, video.id, store.dailyUnlockNow)
+      : { locked: false })
+  }
+  return result
+})
 const hasMoreFolderEntries = computed(
   () =>
     visibleFolders.value.length + visibleFolderVideos.value.length <
@@ -90,7 +130,47 @@ watch(searchInput, (query) => {
   scheduleSearch(query)
 })
 
+function persistPosition(): void {
+  const position = { activeView: activeView.value, folderPath: activeFolderPath.value,
+    searchQuery: searchInput.value, visibleLimit: visibleLimit.value, scrollTop }
+  const serialized = JSON.stringify(position)
+  if (serialized === lastSavedPosition) return
+  if (saveLibraryPosition(uniStorage, position)) lastSavedPosition = serialized
+}
+
+// Scroll events only update memory. Persist once when leaving, not on every pixel.
+onPageScroll((event) => { if (positionReady) scrollTop = event.scrollTop })
+async function restoreScroll(): Promise<void> {
+  if (!pageReady || positionReady || !store.initialized) return
+  await nextTick()
+  if (!pageReady || restoreTimer !== undefined) return
+  // H5 router scrollBehavior resets to zero after mounted/onReady + nextTick.
+  // Restore in the next task, after that navigation reset has completed.
+  restoreTimer = setTimeout(() => {
+    restoreTimer = undefined
+    if (!pageReady) return
+    uni.pageScrollTo?.({ scrollTop, duration: 0 })
+    positionReady = true
+  }, 0)
+}
+onReady(() => { pageReady = true; void restoreScroll() })
+onHide(persistPosition)
+onUnload(persistPosition)
+watch([folderIndex, () => store.initialized], ([index]) => {
+  if (!store.initialized) return
+  const resolved = resolveLibraryFolder(activeFolderPath.value, store.folderTree.path, new Set(index.keys()))
+  if (resolved !== activeFolderPath.value) {
+    activeFolderPath.value = resolved
+    resetVisibleLimit()
+    if (positionReady) uni.pageScrollTo?.({ scrollTop: 0, duration: 0 })
+  }
+  void restoreScroll()
+}, { immediate: true })
+
 onUnmounted(() => {
+  pageReady = false
+  if (restoreTimer !== undefined) clearTimeout(restoreTimer)
+  persistPosition()
   if (cooldownTimer !== undefined) {
     clearTimeout(cooldownTimer)
   }
@@ -100,6 +180,7 @@ onUnmounted(() => {
 })
 
 onLoad((query) => {
+  learningGuideRequested.value = query?.learningGuide === '1'
   if (query?.openImport === '1') {
     openNewImport()
   }
@@ -197,13 +278,7 @@ function formatUnlockTime(timestamp: number | undefined): string {
 }
 
 function countFolderVideos(folder: VideoFolder): number {
-  return (
-    folder.videos.length +
-    folder.folders.reduce(
-      (total, child) => total + countFolderVideos(child),
-      0
-    )
-  )
+  return folderIndex.value.get(folder.path)?.count ?? 0
 }
 
 function loadMore(): void {
@@ -212,6 +287,7 @@ function loadMore(): void {
 
 function resetVisibleLimit(): void {
   visibleLimit.value = LIBRARY_BATCH_SIZE
+  scrollTop = 0
 }
 
 function scheduleSearch(query: string): void {
@@ -248,38 +324,6 @@ function scheduleCooldownClock(retryAt: number | null): void {
   timerWithUnref.unref?.()
 }
 
-function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
-  if (root.path === path) {
-    return root
-  }
-
-  for (const child of root.folders) {
-    const match = findFolder(child, path)
-    if (match) {
-      return match
-    }
-  }
-
-  return undefined
-}
-
-function findFolderTrail(
-  root: VideoFolder,
-  path: string
-): VideoFolder[] | undefined {
-  if (root.path === path) {
-    return [root]
-  }
-
-  for (const child of root.folders) {
-    const childTrail = findFolderTrail(child, path)
-    if (childTrail) {
-      return [root, ...childTrail]
-    }
-  }
-
-  return undefined
-}
 </script>
 
 <template>
@@ -304,6 +348,15 @@ function findFolderTrail(
         </button>
       </view>
     </header>
+
+    <view v-if="showLearningGuide" class="library-learning-guide" data-testid="library-learning-guide">
+      <text>{{ store.mergedVideos.length ? '视频已准备好，下一步选择课程和每日集数。' : '第 1 步：添加媒体直链，或连接百度网盘获取视频。' }}</text>
+      <button v-if="store.mergedVideos.length" data-testid="library-learning-next" @click="continueLearningGuide">下一步：选择课程</button>
+      <view v-else class="library-learning-guide__actions">
+        <button data-testid="library-learning-add" @click="openNewImport">添加媒体直链</button>
+        <button data-testid="library-learning-connect" @click="connectLearningSource">连接百度网盘</button>
+      </view>
+    </view>
 
     <label class="library-search">
       <Search :size="20" :stroke-width="1.9" aria-hidden="true" />
@@ -347,7 +400,7 @@ function findFolderTrail(
             :key="video.id"
             class="library-video-entry"
           >
-            <VideoRow :video="video" display="card" :unlock-status="store.videoUnlockStatus(video.id)" @select="openPlayer" />
+            <VideoRow :video="video" display="card" :unlock-status="visibleUnlockStatuses.get(video.id)" @select="openPlayer" />
             <button
               v-if="video.sourceType === 'direct'"
               type="button"
@@ -450,7 +503,7 @@ function findFolderTrail(
             :key="video.id"
             class="library-video-entry"
           >
-            <VideoRow :video="video" display="card" :unlock-status="store.videoUnlockStatus(video.id)" @select="openPlayer" />
+            <VideoRow :video="video" display="card" :unlock-status="visibleUnlockStatuses.get(video.id)" @select="openPlayer" />
           </view>
         </view>
 
@@ -487,6 +540,10 @@ function findFolderTrail(
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
+
+.library-learning-guide { margin: 12rpx 0; padding: 18rpx; border-radius: 10px; background: $color-primary-soft; color: $color-text; font-size: 23rpx; line-height: 1.5; }
+.library-learning-guide__actions { display: flex; flex-wrap: wrap; }
+.library-learning-guide button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; margin: 12rpx 12rpx 0 0; padding: 12rpx 16rpx; border: 1px solid $color-primary; border-radius: 8px; color: $color-primary; background: $color-surface; font-size: 23rpx; }
 
 .library-page {
   padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 26rpx);
@@ -730,6 +787,10 @@ function findFolderTrail(
 }
 
 .library-breadcrumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   flex: 0 0 auto;
   min-height: 58rpx;
   margin: 0 6rpx 0 0;
@@ -782,5 +843,17 @@ function findFolderTrail(
 
 @keyframes library-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Keep controls usable on narrow screens and when system text is enlarged. */
+.library-add-button, .library-refresh-button, .library-manage-button { min-width: 44px; min-height: 44px; }
+.library-segment { height: auto; }
+.library-segment__button, .library-load-more, .library-breadcrumb, .library-folder-row, .library-folder-list--home .library-folder-row { min-height: 44px; }
+.library-search { min-height: 44px; height: auto; padding-top: 8rpx; padding-bottom: 8rpx; }
+.library-search input { height: 28px; min-height: 28px; line-height: 28px; }
+.library-folder-row__name { white-space: normal; overflow-wrap: anywhere; }
+.library-breadcrumb { max-width: 85%; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 360px) {
+  .library-video-list { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

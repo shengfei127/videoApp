@@ -52,7 +52,7 @@ export function getUnlockedEpisodeCount(
   const currentDay = localDayOrdinal(effectiveNow)
   const elapsedDays = currentDay - createdDay
   const count = course.scheduleAnchorAt === undefined
-    ? Math.max(0, elapsedDays + 1) * dailyRate(course)
+    ? (course.startEpisodeNumber ?? 1) - 1 + Math.max(0, elapsedDays + 1) * dailyRate(course)
     : (course.scheduleAnchorUnlockedCount ?? 0) + Math.max(0, elapsedDays) * dailyRate(course)
   return Math.min(
     course.episodes.length,
@@ -70,7 +70,7 @@ export function getTodayCourseEpisodes(course: DailyUnlockCourse, now: number): 
   const start = course.scheduleAnchorAt !== undefined && localDayOrdinal(now) === localDayOrdinal(course.scheduleAnchorAt)
     ? course.scheduleAnchorTodayStart ?? end
     : getUnlockedEpisodeCount(course, localMidnightAfter(now, 0) - 1)
-  return course.episodes.slice(start, end)
+  return course.episodes.slice(Math.max(start, (course.startEpisodeNumber ?? 1) - 1), end)
 }
 
 export function rescheduleDailyUnlockCourse(
@@ -102,7 +102,7 @@ function episodeUnlockAt(course: DailyUnlockCourse, index: number): number {
     const remainingIndex = index - (course.scheduleAnchorUnlockedCount ?? 0)
     return localMidnightAfter(course.scheduleAnchorAt, Math.floor(remainingIndex / dailyRate(course)) + 1)
   }
-  return localMidnightAfter(course.createdAt, Math.floor(index / dailyRate(course)))
+  return localMidnightAfter(course.createdAt, Math.floor((index - ((course.startEpisodeNumber ?? 1) - 1)) / dailyRate(course)))
 }
 
 export function getVideoUnlockStatus(

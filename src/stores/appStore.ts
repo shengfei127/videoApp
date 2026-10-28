@@ -33,6 +33,7 @@ import {
 } from '@/features/daily-unlock/dailyUnlockPolicy'
 import { classifyProgress } from '@/features/playback/progressPolicy'
 import { ProgressRepository } from '@/features/playback/progressRepository'
+import type { StorageAudit, StorageCompaction } from '@/features/playback/storageAudit'
 import { createSecureUuid } from '@/infrastructure/secureRandom'
 import { uniStorage } from '@/infrastructure/storage'
 import {
@@ -106,10 +107,17 @@ interface DirectRecordsRepository {
 }
 
 interface PlaybackProgressRepository {
+  batchSetCompleted?(videoIds: string[], updatedAt: number): string
+  undoBatchCompleted?(token: string): boolean
+  inspectStorage?(): StorageAudit
+  compactStorage?(): StorageCompaction
+  listLearningHistory?(): PlaybackProgress[]
   listHistory(): PlaybackProgress[]
   listResumable(): PlaybackProgress[]
   clear(): void
   setCompleted?(videoId: string, completed: boolean, updatedAt: number, durationSeconds?: number): PlaybackProgress
+  recoverPendingWrites?(): boolean
+  relinkVideo?(oldVideoId: string, newVideoId: string, commitCourse: () => void): void
 }
 
 interface BaiduCatalogSource {
@@ -121,7 +129,7 @@ type MockBootstrapper = (
   options?: BootstrapMocksOptions
 ) => MockBootstrapData | null
 
-export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath' | 'dailyEpisodeCount'>
+export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath' | 'dailyEpisodeCount' | 'startEpisodeNumber'>
 export interface UpdateDailyUnlockCourseInput {
   name?: string
   dailyEpisodeCount?: number
@@ -160,6 +168,12 @@ export function createAppStore(
     const baiduCacheSavedAt = ref<number | null>(null)
     const directRecords = ref<DirectVideoRecord[]>([])
     const progressHistory = ref<PlaybackProgress[]>([])
+    const learningRecoveryRequired = ref(false)
+    const learningRecords = ref<PlaybackProgress[]>([])
+    const learningHistory = computed(() => [...new Map([
+      ...learningRecords.value.map((progress) => [progress.videoId, progress] as const),
+      ...progressHistory.value.map((progress) => [progress.videoId, progress] as const)
+    ]).values()])
     const resumableProgress = ref<PlaybackProgress[]>([])
     const dailyUnlockSettings = ref<DailyUnlockSettings>({ enabled: false, courses: [] })
     const dailyUnlockNow = ref(0)
@@ -255,7 +269,7 @@ export function createAppStore(
             lastError.value = safeError('initialization')
           })
           .finally(() => {
-            initialized.value = true
+            initialized.value = !learningRecoveryRequired.value
             initializationPromise = null
           })
       }
@@ -289,6 +303,7 @@ export function createAppStore(
         return
       }
 
+      if (!ensureLearningStorage()) return
       let localLoadFailed = false
       const now = dependencies.now()
       dailyUnlockNow.value = now
@@ -326,6 +341,7 @@ export function createAppStore(
       }
 
       try {
+        learningRecords.value = dependencies.progressRepository.listLearningHistory?.().map((progress) => ({ ...progress })) ?? []
         progressHistory.value = dependencies.progressRepository
           .listHistory()
           .map((progress) => ({ ...progress }))
@@ -546,7 +562,39 @@ export function createAppStore(
       )
     }
 
+    function ensureLearningStorage(): boolean {
+      try {
+        const recovered = dependencies.progressRepository.recoverPendingWrites?.() ?? false
+        if (recovered || learningRecoveryRequired.value) {
+          const settings = dependencies.dailyUnlockRepository.load()
+          const history = dependencies.progressRepository.listHistory().map((item) => ({ ...item }))
+          const learning = dependencies.progressRepository.listLearningHistory?.().map((item) => ({ ...item })) ?? []
+          const resumable = dependencies.progressRepository.listResumable().map((item) => ({ ...item }))
+          dailyUnlockSettings.value = cloneDailyUnlockSettings(settings)
+          progressHistory.value = history
+          learningRecords.value = learning
+          resumableProgress.value = resumable
+          refreshDailyUnlockClock()
+        }
+        learningRecoveryRequired.value = false
+        return true
+      } catch {
+        learningRecoveryRequired.value = true
+        lastError.value = safeError('initialization')
+        return false
+      }
+    }
+
+    async function retryLearningRecovery(): Promise<boolean> {
+      if (initializationPromise) await initializationPromise
+      const succeeded = ensureLearningStorage()
+      if (succeeded && lastError.value?.code === 'initialization') lastError.value = null
+      if (succeeded && !initialized.value) await initialize()
+      return succeeded && !learningRecoveryRequired.value
+    }
+
     function setDailyUnlockEnabled(enabled: boolean): boolean {
+      if (!ensureLearningStorage()) return false
       const next = { ...cloneDailyUnlockSettings(dailyUnlockSettings.value), enabled }
       try {
         dependencies.dailyUnlockRepository.save(next)
@@ -558,9 +606,22 @@ export function createAppStore(
       return true
     }
 
+    function reloadDailyUnlockSettings(): boolean {
+      if (!ensureLearningStorage()) return false
+      try {
+        dailyUnlockSettings.value = cloneDailyUnlockSettings(dependencies.dailyUnlockRepository.load())
+        refreshDailyUnlockClock()
+        return true
+      } catch {
+        return false
+      }
+    }
+
     function createDailyUnlockCourse(
-      input: CreateDailyUnlockCourseInput
+      input: CreateDailyUnlockCourseInput,
+      options: { enableDailyUnlock?: boolean } = {}
     ): DailyUnlockCourseResult {
+      if (!ensureLearningStorage()) return { ok: false, reason: 'storage' }
       const name = typeof input?.name === 'string' ? input.name.trim() : ''
       if (
         !name ||
@@ -573,6 +634,7 @@ export function createAppStore(
         return { ok: false, reason: 'invalid' }
       }
       const episodes: DailyUnlockEpisode[] = []
+      if (input.startEpisodeNumber !== undefined && (!Number.isInteger(input.startEpisodeNumber) || input.startEpisodeNumber < 1 || input.startEpisodeNumber > input.episodes.length)) return { ok: false, reason: 'invalid' }
       const seenVideoIds = new Set<string>()
       for (const episode of input.episodes) {
         if (
@@ -617,12 +679,14 @@ export function createAppStore(
         name,
         createdAt: dependencies.now(),
         ...(input.dailyEpisodeCount !== undefined ? { dailyEpisodeCount: input.dailyEpisodeCount } : {}),
+        ...(input.startEpisodeNumber !== undefined ? { startEpisodeNumber: input.startEpisodeNumber } : {}),
         ...(input.sourceFolderPath ? { sourceFolderPath: input.sourceFolderPath } : {}),
         episodes
       }
       const next = {
         ...cloneDailyUnlockSettings(dailyUnlockSettings.value),
-        courses: [...dailyUnlockSettings.value.courses, course]
+        courses: [...dailyUnlockSettings.value.courses, course],
+        enabled: options.enableDailyUnlock === true || dailyUnlockSettings.value.enabled
       }
       try {
         dependencies.dailyUnlockRepository.save(next)
@@ -635,6 +699,7 @@ export function createAppStore(
     }
 
     function updateDailyUnlockCourse(courseId: string, patch: UpdateDailyUnlockCourseInput): boolean {
+      if (!ensureLearningStorage()) return false
       const course = dailyUnlockSettings.value.courses.find((item) => item.id === courseId)
       if (!course || !patch ||
         (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.trim().length > 160)) ||
@@ -655,7 +720,44 @@ export function createAppStore(
       return true
     }
 
+    function batchMarkCourseLearned(courseId: string, start1: number, end1: number): { ok: true; undoToken: string; count: number } | { ok: false; reason: 'invalid' | 'storage' } {
+      if (!ensureLearningStorage()) return { ok: false, reason: 'storage' }
+      const course = dailyUnlockSettings.value.courses.find((item) => item.id === courseId)
+      if (!course || !Number.isInteger(start1) || !Number.isInteger(end1) || start1 < 1 || end1 < start1 || end1 > course.episodes.length) return { ok: false, reason: 'invalid' }
+      if (!dependencies.progressRepository.batchSetCompleted) return { ok: false, reason: 'storage' }
+      try {
+        const ids = course.episodes.slice(start1 - 1, end1).map((episode) => episode.videoId)
+        const undoToken = dependencies.progressRepository.batchSetCompleted(ids, dependencies.now())
+        reloadProgress()
+        return { ok: true, undoToken, count: ids.length }
+      } catch { return { ok: false, reason: 'storage' } }
+    }
+
+    function undoBatchLearned(token: string): boolean {
+      if (!ensureLearningStorage() || !dependencies.progressRepository.undoBatchCompleted) return false
+      try {
+        const restored = dependencies.progressRepository.undoBatchCompleted(token)
+        if (restored) reloadProgress()
+        return restored
+      } catch { return false }
+    }
+
+    function inspectLearningStorage(): StorageAudit | null {
+      if (!ensureLearningStorage()) return null
+      try { return dependencies.progressRepository.inspectStorage?.() ?? null } catch { return null }
+    }
+
+    function compactLearningStorage(): StorageCompaction | null {
+      if (!ensureLearningStorage()) return null
+      try {
+        const result = dependencies.progressRepository.compactStorage?.() ?? null
+        if (result) reloadProgress()
+        return result
+      } catch { return null }
+    }
+
     function markVideoLearned(videoId: string, completed: boolean): boolean {
+      if (!ensureLearningStorage()) return false
       const video = mergedVideos.value.find((item) => item.id === videoId)
       const isCourseVideo = dailyUnlockSettings.value.courses.some((course) => course.episodes.some((episode) => episode.videoId === videoId))
       if ((!video && !isCourseVideo) || typeof completed !== 'boolean' || !dependencies.progressRepository.setCompleted) return false
@@ -670,6 +772,7 @@ export function createAppStore(
     }
 
     function deleteDailyUnlockCourse(courseId: string): boolean {
+      if (!ensureLearningStorage()) return false
       if (!dailyUnlockSettings.value.courses.some((course) => course.id === courseId)) {
         return true
       }
@@ -686,7 +789,44 @@ export function createAppStore(
       return true
     }
 
+    function restoreDailyUnlockCourse(snapshot: DailyUnlockCourse): boolean {
+      if (!ensureLearningStorage()) return false
+      if (!snapshot || dailyUnlockSettings.value.courses.some((course) => course.id === snapshot.id) ||
+        !Array.isArray(snapshot.episodes) || findCourseConflict(dailyUnlockSettings.value.courses, snapshot.episodes.map((episode) => episode.videoId))) return false
+      const next = { ...cloneDailyUnlockSettings(dailyUnlockSettings.value), courses: [...dailyUnlockSettings.value.courses, cloneDailyUnlockCourse(snapshot)] }
+      try {
+        dependencies.dailyUnlockRepository.save(next)
+      } catch {
+        return false
+      }
+      dailyUnlockSettings.value = next
+      refreshDailyUnlockClock()
+      return true
+    }
+
+    function relinkDailyUnlockEpisode(courseId: string, oldVideoId: string, newVideoId: string): boolean {
+      if (!ensureLearningStorage()) return false
+      const course = dailyUnlockSettings.value.courses.find((item) => item.id === courseId)
+      const replacement = mergedVideos.value.find((item) => item.id === newVideoId)
+      if (!course || !replacement || !course.episodes.some((episode) => episode.videoId === oldVideoId) ||
+        oldVideoId === newVideoId || findCourseConflict(dailyUnlockSettings.value.courses, [newVideoId]) || !dependencies.progressRepository.relinkVideo) return false
+      const episode: DailyUnlockEpisode = { videoId: replacement.id, name: replacement.name, sourceType: replacement.sourceType,
+        ...(replacement.sourceType === 'baidu' ? { path: replacement.path } : {}) }
+      const next = cloneDailyUnlockSettings(dailyUnlockSettings.value)
+      next.courses = next.courses.map((item) => item.id === courseId ? { ...item, episodes: item.episodes.map((entry) => entry.videoId === oldVideoId ? episode : entry) } : item)
+      try {
+        dependencies.progressRepository.relinkVideo(oldVideoId, newVideoId, () => dependencies.dailyUnlockRepository.save(next))
+      } catch {
+        ensureLearningStorage()
+        return false
+      }
+      dailyUnlockSettings.value = next
+      reloadProgress()
+      return true
+    }
+
     function reloadProgress(): PlaybackProgress[] {
+      if (!ensureLearningStorage()) return progressHistory.value.map((item) => ({ ...item }))
       try {
         const history = dependencies.progressRepository
           .listHistory()
@@ -694,7 +834,9 @@ export function createAppStore(
         const resumable = dependencies.progressRepository
           .listResumable()
           .map((progress) => ({ ...progress }))
+        const learning = dependencies.progressRepository.listLearningHistory?.().map((progress) => ({ ...progress })) ?? []
         progressHistory.value = history
+        learningRecords.value = learning
         resumableProgress.value = resumable
       } catch {
         lastError.value = safeError('initialization')
@@ -742,8 +884,10 @@ export function createAppStore(
     }
 
     function clearProgress(): boolean {
+      if (!ensureLearningStorage()) return false
       try {
         dependencies.progressRepository.clear()
+        learningRecords.value = dependencies.progressRepository.listLearningHistory?.().map((progress) => ({ ...progress })) ?? []
         progressHistory.value = []
         resumableProgress.value = []
         return true
@@ -827,6 +971,9 @@ export function createAppStore(
       baiduCacheSavedAt,
       directRecords,
       progressHistory,
+      learningHistory,
+      learningRecoveryRequired,
+      retryLearningRecovery,
       resumableProgress,
       syncStatus,
       lastError,
@@ -842,10 +989,17 @@ export function createAppStore(
       videoUnlockStatus,
       refreshDailyUnlockClock,
       setDailyUnlockEnabled,
+      reloadDailyUnlockSettings,
       createDailyUnlockCourse,
       updateDailyUnlockCourse,
       markVideoLearned,
+      batchMarkCourseLearned,
+      undoBatchLearned,
+      inspectLearningStorage,
+      compactLearningStorage,
       deleteDailyUnlockCourse,
+      restoreDailyUnlockCourse,
+      relinkDailyUnlockEpisode,
       continueWatching,
       searchResults,
       folderTree,

@@ -1,0 +1,93 @@
+import { expect, test, type Locator, type Page } from '@playwright/test'
+
+// Deliberately a browser font-size simulation; this does not validate Android system font scaling.
+const LARGE_TEXT = `uni-text, uni-button, button, input, textarea, .uni-modal__title, .uni-modal__bd, .uni-modal__btn { font-size: 22px !important; }`
+
+async function noOverflow(page: Page): Promise<void> {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+}
+
+async function reachableAction(page: Page, action: Locator): Promise<void> {
+  await action.scrollIntoViewIfNeeded()
+  await expect(action).toBeVisible()
+  const box = await action.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.x).toBeGreaterThanOrEqual(-1)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(321)
+  expect(box!.height).toBeGreaterThanOrEqual(43)
+}
+
+test('320px enlarged-text course and backup flows stay reachable and report download honestly', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 700 })
+  const exceptions: string[] = []
+  page.on('pageerror', (error) => exceptions.push(error.message))
+  await page.goto('/?scenario=library#/pages/home/index', { waitUntil: 'domcontentloaded' })
+  await page.addStyleTag({ content: LARGE_TEXT })
+  await noOverflow(page)
+  await reachableAction(page, page.locator('.bottom-nav').getByLabel('设置'))
+  await page.locator('.bottom-nav').getByLabel('设置').click()
+  await noOverflow(page)
+  await page.locator('.settings-menu-row').filter({ hasText: '每日课程' }).click()
+  await page.getByTestId('daily-unlock-manage').click()
+  await page.getByTestId('mode-videos').click()
+  await page.getByTestId('course-name').locator('input').fill('这是一门名称很长的课程用于检查小屏放大字体后的操作布局')
+  await page.locator('[data-video-id="baidu:1001"]').click()
+  await reachableAction(page, page.getByTestId('create-course'))
+  await page.getByTestId('create-course').click()
+  await expect(page.getByTestId('course-card')).toHaveCount(1)
+  await noOverflow(page)
+  await reachableAction(page, page.getByTestId('course-more'))
+  await page.getByTestId('course-more').click()
+  await reachableAction(page, page.getByTestId('edit-course'))
+  await reachableAction(page, page.getByTestId('delete-course'))
+  await page.getByTestId('course-episodes-toggle').click()
+  await reachableAction(page, page.locator('[data-relink-episode="baidu:1001"]'))
+  await page.screenshot({ path: testInfo.outputPath('narrow-large-font-course.png'), fullPage: true })
+  await page.getByLabel('返回设置', { exact: true }).click()
+  await page.getByTestId('settings-backup').click()
+  await reachableAction(page, page.getByTestId('backup-export'))
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByTestId('backup-export').click()
+  const download = await downloadPromise
+  expect(await download.failure()).toBeNull()
+  await expect(page.getByTestId('backup-history')).toContainText('上次发起下载')
+  await expect(page.locator('.backup-panel')).toContainText('本页无法确认下载结果')
+  await noOverflow(page)
+  const path = await download.path()
+  expect(path).toBeTruthy()
+  const chooserPromise = page.waitForEvent('filechooser')
+  await page.getByTestId('backup-file').click()
+  await (await chooserPromise).setFiles(path!)
+  await expect(page.getByTestId('backup-preview')).toContainText('1 门课程')
+  await reachableAction(page, page.getByTestId('backup-restore'))
+  await page.getByTestId('backup-restore').click()
+  await expect(page.locator('.uni-modal')).toBeVisible()
+  await noOverflow(page)
+  await reachableAction(page, page.locator('.uni-modal__btn_default'))
+  await reachableAction(page, page.locator('.uni-modal__btn_primary'))
+  await page.screenshot({ path: testInfo.outputPath('narrow-large-font-restore-confirm.png'), fullPage: true })
+  await page.locator('.uni-modal__btn_default').click()
+  await expect(page.getByTestId('backup-preview')).toBeVisible()
+  await page.getByTestId('settings-backup').click()
+  await page.getByTestId('settings-backup').click()
+  await expect(page.getByTestId('backup-history')).toContainText('上次发起下载')
+  expect(exceptions).toEqual([])
+})
+
+test('known missing-file errors expose a safe source action on a narrow screen', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 700 })
+  const exceptions: string[] = []
+  page.on('pageerror', (error) => exceptions.push(error.message))
+  await page.route('**/rest/2.0/xpan/multimedia**', (route) => route.fulfill({ status: 404, body: 'missing internal token=do-not-render' }))
+  await page.goto('/?scenario=library#/pages/library/index', { waitUntil: 'domcontentloaded' })
+  await page.addStyleTag({ content: LARGE_TEXT })
+  await page.getByLabel('播放视频：第2站·海边.mp4', { exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('找不到视频文件')
+  await expect(page.locator('body')).not.toContainText('do-not-render')
+  await reachableAction(page, page.getByTestId('player-source-action'))
+  await noOverflow(page)
+  await page.screenshot({ path: testInfo.outputPath('narrow-safe-playback-error.png'), fullPage: true })
+  await page.getByTestId('player-source-action').click()
+  await expect(page.getByTestId('library-add')).toBeVisible()
+  expect(exceptions).toEqual([])
+})

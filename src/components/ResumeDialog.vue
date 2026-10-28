@@ -126,6 +126,8 @@ function formatDuration(totalSeconds: number): string {
   display: flex;
   width: min(100%, 620rpx);
   min-height: 300rpx;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   flex-direction: column;
   justify-content: center;
   padding: 42rpx 34rpx;
@@ -156,8 +158,14 @@ function formatDuration(totalSeconds: number): string {
 }
 
 .resume-dialog__action {
+  box-sizing: border-box;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+  line-height: 1.4;
   display: flex;
-  min-height: 78rpx;
+  min-height: max(44px, 78rpx);
   align-items: center;
   justify-content: center;
   margin: 0 6rpx;
@@ -180,5 +188,11 @@ function formatDuration(totalSeconds: number): string {
   border: 1px solid $color-border;
   color: $color-text;
   background: $color-surface;
+}
+
+@media (max-width: 360px) {
+  .resume-dialog__actions { grid-template-columns: minmax(0, 1fr); }
+  .resume-dialog__action + .resume-dialog__action { margin-top: 10px; }
+  .resume-dialog__detail { overflow-wrap: anywhere; }
 }
 </style>

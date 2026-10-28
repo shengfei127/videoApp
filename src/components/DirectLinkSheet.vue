@@ -449,7 +449,7 @@ function readContentType(headers: unknown): string | undefined {
 
 .direct-link-sheet__heading text { margin-left: 12rpx; }
 
-.direct-link-sheet__icon-button {
+.direct-link-sheet__icon-button { box-sizing: border-box; min-width: 44px; min-height: 44px;
   display: flex;
   width: 68rpx;
   height: 68rpx;
@@ -508,10 +508,14 @@ function readContentType(headers: unknown): string | undefined {
 }
 
 .direct-link-sheet__button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   box-sizing: border-box;
   justify-content: center;
   min-width: 130rpx;
-  min-height: 76rpx;
+  min-height: max(44px, 76rpx);
   margin: 0 0 0 10rpx;
   padding: 12rpx 18rpx;
   border: 1px solid transparent;
@@ -521,7 +525,7 @@ function readContentType(headers: unknown): string | undefined {
   line-height: 1.3;
 }
 
-.direct-link-sheet__button text { margin-left: 7rpx; }
+.direct-link-sheet__button .app-icon + text { margin-left: 7rpx; }
 .direct-link-sheet__button--primary { color: #fff; background: $color-primary; }
 .direct-link-sheet__button--secondary { border-color: $color-primary; color: $color-primary; background: $color-primary-soft; }
 .direct-link-sheet__button--danger { margin-right: auto; border-color: #e4b9b1; color: #a43b2c; background: #fff6f4; }

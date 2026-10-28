@@ -134,6 +134,53 @@ describe('VideoRow', () => {
 })
 
 describe('Home page', () => {
+  it('renders missed lessons in small batches and resets the batch after collapsing', async () => {
+    const { wrapper } = mountHome((store) => {
+      store.dailyUnlockNow = new Date(2026, 9, 28).getTime()
+      store.dailyUnlockSettings = { enabled: true, courses: [{ id: 'large-plan', name: '长期学习计划', createdAt: new Date(2026, 0, 1).getTime(), episodes: Array.from({ length: 100 }, (_, index) => ({ videoId: `direct:${index}`, name: `第${index + 1}集`, sourceType: 'direct' as const })) }] }
+    })
+    expect(wrapper.findAll('.learning-lesson')).toHaveLength(0)
+    await wrapper.get('[data-backlog-course="large-plan"]').trigger('click')
+    expect(wrapper.findAll('.learning-lesson')).toHaveLength(20)
+    await wrapper.get('[data-backlog-more="large-plan"]').trigger('click')
+    expect(wrapper.findAll('.learning-lesson')).toHaveLength(40)
+    await wrapper.get('[data-backlog-course="large-plan"]').trigger('click')
+    await wrapper.get('[data-backlog-course="large-plan"]').trigger('click')
+    expect(wrapper.findAll('.learning-lesson')).toHaveLength(20)
+    wrapper.unmount()
+  })
+
+  it('groups missed lessons by course and offers a timed undo after a lesson disappears', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 28, 12))
+    const { wrapper, store } = mountHome((store) => {
+      store.dailyUnlockNow = Date.now()
+      store.dailyUnlockSettings = { enabled: true, courses: [0, 1].map((index) => ({
+        id: `course-${index}`, name: '同名课程', createdAt: new Date(2026, 9, 25).getTime(),
+        episodes: [{ videoId: `direct:${index}`, name: `课程${index}`, sourceType: 'direct' }]
+      })) }
+    })
+    expect(wrapper.findAll('[data-backlog-course]')).toHaveLength(2)
+    expect(wrapper.find('[data-testid="backlog-lessons"]').exists()).toBe(false)
+    await wrapper.get('[data-backlog-course="course-0"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="backlog-lessons"]')).toHaveLength(1)
+    await wrapper.get('[data-lesson-id="direct:0"] [data-testid="lesson-more"]').trigger('click')
+    await wrapper.get('[aria-label="标记学完：课程0"]').trigger('click')
+    expect(wrapper.find('[data-backlog-course="course-0"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="learning-undo"]').text()).toContain('课程0')
+    expect(store.progressHistory).toEqual([])
+    await wrapper.get('[data-testid="learning-undo"] button').trigger('click')
+    expect(wrapper.find('[data-lesson-id="direct:0"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="learning-undo"]').exists()).toBe(false)
+    await wrapper.get('[data-lesson-id="direct:0"] [data-testid="lesson-more"]').trigger('click')
+    await wrapper.get('[aria-label="标记学完：课程0"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(8000)
+    expect(wrapper.find('[data-testid="learning-undo"]').exists()).toBe(false)
+    expect(store.learningHistory.find((item) => item.videoId === 'direct:0')?.completed).toBe(true)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('continues the most recently watched missed lesson across courses', () => {
     const now = new Date(2026, 9, 28, 12).getTime()
     const { wrapper } = mountHome((store) => {
@@ -165,10 +212,15 @@ describe('Home page', () => {
     const backlogButton = wrapper.findAll('button').find((button) => button.text().includes('待补学'))!
     await backlogButton.trigger('click')
     expect(wrapper.get('[data-testid="backlog-lessons"]').text()).toContain('第2课')
+    await wrapper.get('[data-lesson-id="baidu:lesson-2"] [data-testid="lesson-more"]').trigger('click')
     await wrapper.get('[aria-label="标记学完：第3课"]').trigger('click')
     expect(wrapper.text()).toContain('今日学习已完成')
     expect(wrapper.text()).toContain('复习本节')
-    expect(store.progressHistory.find((progress) => progress.videoId === videos[2]!.id)?.completed).toBe(true)
+    expect(store.learningHistory.find((progress) => progress.videoId === videos[2]!.id)?.completed).toBe(true)
+    expect(store.progressHistory.some((progress) => progress.videoId === videos[2]!.id)).toBe(false)
+    await wrapper.get('[data-lesson-id="baidu:lesson-2"] .learning-lesson__review').trigger('click')
+    expect(uni.navigateTo).toHaveBeenCalledWith({ url: '/pages/player/index?id=baidu%3Alesson-2&restart=1' })
+    await wrapper.get('[data-lesson-id="baidu:lesson-2"] [data-testid="lesson-more"]').trigger('click')
     await wrapper.get('[aria-label="撤销学完：第3课"]').trigger('click')
     expect(wrapper.find('.home-learning-done').exists()).toBe(false)
     await wrapper.findAll('button').find((button) => button.text().includes('查看明日安排'))!.trigger('click')
@@ -197,7 +249,7 @@ describe('Home page', () => {
     expect(section.text()).toContain('已学完')
     expect(section.text()).not.toContain('明日第二课')
     await section.get('button.video-row').trigger('click')
-    expect(uni.navigateTo).toHaveBeenCalledWith({ url: '/pages/player/index?id=baidu%3Atoday' })
+    expect(uni.navigateTo).toHaveBeenCalledWith({ url: '/pages/player/index?id=baidu%3Atoday&restart=1' })
     store.refreshDailyUnlockClock(new Date(2026, 9, 29).getTime())
     await wrapper.vm.$nextTick()
     expect(section.text()).toContain('明日第二课')
@@ -222,7 +274,7 @@ describe('Home page', () => {
     })
 
     expect(wrapper.findAllComponents(VideoRow)).toHaveLength(0)
-    expect(wrapper.text()).toContain('看过视频后会显示在这里')
+    expect(wrapper.find('[data-home-section="recent"]').exists()).toBe(false)
   })
 
   it('keeps the first-run home aligned to the design without a large onboarding panel', () => {
@@ -232,7 +284,7 @@ describe('Home page', () => {
     expect(wrapper.find('.home-brand-mark').exists()).toBe(true)
     expect(wrapper.find('.home-resume').exists()).toBe(false)
     expect(wrapper.find('.home-sources').exists()).toBe(false)
-    expect(wrapper.get('#recent-videos-title').text()).toBe('最近看过')
+    expect(wrapper.find('#recent-videos-title').exists()).toBe(false)
     expect(wrapper.get('button[aria-label="首页"]').attributes('aria-current')).toBe('page')
   })
 

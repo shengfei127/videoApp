@@ -18,6 +18,7 @@ import {
   DirectLinkService
 } from '@/features/direct-links/directLinkService'
 import { DailyUnlockRepository } from '@/features/daily-unlock/dailyUnlockRepository'
+import { LEARNING_TRANSACTION_KEY } from '@/infrastructure/learningTransaction'
 import {
   PROGRESS_STORAGE_KEY,
   ProgressRepository
@@ -50,6 +51,48 @@ const H5_DEVELOPMENT = {
 } as const
 
 describe('app store initialization', () => {
+  it('recovers interrupted learning writes before loading either courses or progress', async () => {
+    const context = createTestContext('recover-before-load')
+    const oldProgress = [{ videoId: 'baidu:old', positionSeconds: 120, durationSeconds: 600, completed: false, updatedAt: NOW }]
+    context.storage.write(LEARNING_TRANSACTION_KEY, { version: 1, originals: [
+      { key: 'pianke:daily-unlock:v1', value: { enabled: false, courses: [] } },
+      { key: PROGRESS_STORAGE_KEY, value: oldProgress }
+    ] })
+    context.storage.write('pianke:daily-unlock:v1', { enabled: true, courses: [] })
+    context.storage.write(PROGRESS_STORAGE_KEY, [])
+    await context.store.initialize()
+    expect(context.store.dailyUnlockSettings.enabled).toBe(false)
+    expect(context.store.progressHistory).toEqual(oldProgress)
+    expect(context.store.learningRecoveryRequired).toBe(false)
+    expect(context.storage.read(LEARNING_TRANSACTION_KEY, null)).toBeNull()
+  })
+
+  it('blocks learning mutations while recovery fails and permits retry without restarting', async () => {
+    const context = createTestContext('recover-retry')
+    context.authRepository.saveSession(validSession())
+    context.directLinkService.add({ name: '保留来源', url: 'https://media.example/video.mp4' })
+    const blocked = vi.spyOn(context.progressRepository, 'recoverPendingWrites').mockImplementation(() => { throw new Error('quota') })
+    await context.store.initialize()
+    expect(context.store.initialized).toBe(false)
+    expect(context.store.learningRecoveryRequired).toBe(true)
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(false)
+    expect(context.store.createDailyUnlockCourse({ name: 'new', episodes: [] })).toEqual({ ok: false, reason: 'storage' })
+    expect(context.store.updateDailyUnlockCourse('missing', { name: 'new' })).toBe(false)
+    expect(context.store.markVideoLearned('missing', true)).toBe(false)
+    expect(context.store.deleteDailyUnlockCourse('missing')).toBe(false)
+    expect(context.store.restoreDailyUnlockCourse({ id: 'new', name: 'new', createdAt: NOW, episodes: [] })).toBe(false)
+    expect(context.store.relinkDailyUnlockEpisode('new', 'a', 'b')).toBe(false)
+    expect(context.store.clearProgress()).toBe(false)
+    expect(await context.store.retryLearningRecovery()).toBe(false)
+    blocked.mockRestore()
+    expect(await context.store.retryLearningRecovery()).toBe(true)
+    expect(context.store.initialized).toBe(true)
+    expect(context.store.learningRecoveryRequired).toBe(false)
+    expect(context.store.authSession).toEqual(validSession())
+    expect(context.store.directRecords).toHaveLength(1)
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(true)
+  })
+
   it('is concurrency-safe and idempotent', async () => {
     const context = createTestContext('initialize-concurrent')
     context.authRepository.saveSession(validSession())
@@ -650,6 +693,37 @@ describe('app store sync state transitions', () => {
 })
 
 describe('app store daily unlock settings', () => {
+  it('persists starting episode and restores a deleted course without changing its schedule', async () => {
+    const context = createTestContext('start-and-restore')
+    await context.store.initialize()
+    const result = context.store.createDailyUnlockCourse({ name: '课程', startEpisodeNumber: 2, episodes: [
+      { videoId: 'direct:first', name: '第一集', sourceType: 'direct' },
+      { videoId: 'direct:second', name: '第二集', sourceType: 'direct' }
+    ] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]?.startEpisodeNumber).toBe(2)
+    expect(context.store.deleteDailyUnlockCourse(result.course.id)).toBe(true)
+    expect(context.store.restoreDailyUnlockCourse(result.course)).toBe(true)
+    expect(context.store.dailyUnlockSettings.courses[0]).toEqual(result.course)
+    expect(context.store.restoreDailyUnlockCourse(result.course)).toBe(false)
+  })
+
+  it('relinks a course slot preserving progress and refuses to overwrite target records', async () => {
+    const context = createTestContext('relink')
+    await context.store.initialize()
+    context.store.baiduVideos = [baiduVideo('replacement', NOW), baiduVideo('occupied', NOW)]
+    const result = context.store.createDailyUnlockCourse({ name: '课程', episodes: [{ videoId: 'direct:lost', name: '失效直链', sourceType: 'direct' }] })
+    if (!result.ok) throw new Error('create failed')
+    context.progressRepository.save('direct:lost', 120, 600, NOW - 1000)
+    context.progressRepository.setCompleted('direct:lost', true, NOW)
+    expect(context.store.relinkDailyUnlockEpisode(result.course.id, 'direct:lost', 'baidu:replacement')).toBe(true)
+    expect(context.store.dailyUnlockSettings.courses[0]?.createdAt).toBe(result.course.createdAt)
+    expect(context.store.dailyUnlockSettings.courses[0]?.episodes[0]?.videoId).toBe('baidu:replacement')
+    expect(context.store.learningHistory[0]).toMatchObject({ videoId: 'baidu:replacement', completed: true, positionSeconds: 120 })
+    context.progressRepository.save('baidu:occupied', 50, 600, NOW)
+    expect(context.store.relinkDailyUnlockEpisode(result.course.id, 'baidu:replacement', 'baidu:occupied')).toBe(false)
+  })
   it('updates course rate and pauses without relocking released lessons', async () => {
     const context = createTestContext('edit-course')
     await context.store.initialize()
@@ -681,6 +755,35 @@ describe('app store daily unlock settings', () => {
     expect(context.store.dailyUnlockSettings).toEqual(confirmed)
   })
 
+  it('batch completes a selected range including locked lessons without changing schedule or watched history', async () => {
+    const context = createTestContext('batch-completion')
+    await context.store.initialize()
+    const course = context.store.createDailyUnlockCourse({ name: '课程', episodes: [
+      { videoId: 'direct:first', name: '第一课', sourceType: 'direct' },
+      { videoId: 'direct:locked', name: '第二课', sourceType: 'direct' },
+      { videoId: 'direct:third', name: '第三课', sourceType: 'direct' }
+    ] })
+    if (!course.ok) throw new Error('fixture course')
+    context.store.setDailyUnlockEnabled(true)
+    const schedule = JSON.stringify(context.store.dailyUnlockSettings)
+    for (const [start, end] of [[0, 1], [2, 1], [1, 4], [1.5, 2]]) {
+      expect(context.store.batchMarkCourseLearned(course.course.id, start, end)).toEqual({ ok: false, reason: 'invalid' })
+    }
+    const result = context.store.batchMarkCourseLearned(course.course.id, 1, 2)
+    expect(result).toMatchObject({ ok: true, count: 2 })
+    expect(context.store.learningHistory.map((item) => item.videoId)).toEqual(['direct:first', 'direct:locked'])
+    expect(context.store.progressHistory).toEqual([])
+    expect(JSON.stringify(context.store.dailyUnlockSettings)).toBe(schedule)
+    expect(context.store.inspectLearningStorage()).toMatchObject({ learningRecords: 2, playbackRecords: 0, duplicateRecords: 0 })
+    expect(context.store.compactLearningStorage()).toMatchObject({ removedRecords: 0, savedBytes: 0 })
+    if (!result.ok) throw new Error('batch failed')
+    expect(context.store.undoBatchLearned(result.undoToken)).toBe(true)
+    expect(context.store.learningHistory).toEqual([])
+    vi.spyOn(context.progressRepository, 'batchSetCompleted').mockImplementation(() => { throw new Error('disk') })
+    expect(context.store.batchMarkCourseLearned(course.course.id, 1, 2)).toEqual({ ok: false, reason: 'storage' })
+    expect(context.store.learningHistory).toEqual([])
+  })
+
   it('manually completes and restores a learned lesson with durable progress', async () => {
     const context = createTestContext('manual-completion')
     await context.store.initialize()
@@ -692,10 +795,11 @@ describe('app store daily unlock settings', () => {
     expect(context.store.markVideoLearned('direct:locked', true)).toBe(false)
     expect(context.store.markVideoLearned('missing', true)).toBe(false)
     expect(context.store.markVideoLearned('direct:first', true)).toBe(true)
-    expect(context.store.progressHistory[0]).toMatchObject({ videoId: 'direct:first', completed: true, durationSeconds: 0 })
+    expect(context.store.progressHistory).toEqual([])
+    expect(context.store.learningHistory[0]).toMatchObject({ videoId: 'direct:first', completed: true, durationSeconds: 0 })
     expect(context.progressRepository.get('direct:first')?.completed).toBe(true)
     expect(context.store.markVideoLearned('direct:first', false)).toBe(true)
-    expect(context.store.progressHistory[0]?.completed).toBe(false)
+    expect(context.store.learningHistory[0]?.completed).toBe(false)
     const previous = structuredClone(context.progressRepository.listHistory())
     vi.spyOn(context.progressRepository, 'setCompleted').mockImplementation(() => { throw new Error('storage') })
     expect(context.store.markVideoLearned('direct:first', true)).toBe(false)

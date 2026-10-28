@@ -23,6 +23,17 @@ function progress(videoId: string, completed: boolean, positionSeconds = 120, du
 }
 
 describe('learning plan', () => {
+  it('starts from the chosen episode without treating earlier episodes as missed or completed', () => {
+    const settings = { enabled: true, courses: [{ ...course(6), startEpisodeNumber: 3 }] }
+    const first = buildLearningPlan(settings, day(0), [], [])
+    expect(first.today.map((item) => item.id)).toEqual(['video-3'])
+    expect(first.today[0]?.completed).toBe(false)
+    expect(first.backlog).toEqual([])
+    const later = buildLearningPlan(settings, day(2), [], [])
+    expect(later.today.map((item) => item.id)).toEqual(['video-5'])
+    expect(later.backlog.map((item) => item.id)).toEqual(['video-3', 'video-4'])
+  })
+
   it('separates today, unfinished past lessons, and tomorrow without forcing backlog completion', () => {
     const plan = buildLearningPlan({ enabled: true, courses: [course()] }, day(2), [], [progress('video-1', true)])
     expect(plan.today.map((item) => item.id)).toEqual(['video-3'])

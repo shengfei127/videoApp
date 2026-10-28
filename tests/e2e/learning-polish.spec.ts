@@ -1,0 +1,118 @@
+import { expect, test, type Page } from '@playwright/test'
+
+const SEA = 'baidu:1001'
+const MOUNTAIN = 'baidu:700000000000000003'
+const LIVE = 'direct:00000000-0000-4000-8000-000000000001'
+
+async function readLearning(page: Page) {
+  return page.evaluate(() => {
+    const read = (key: string) => JSON.parse((window as any).uni.getStorageSync(key) || 'null')
+    return { courses: read('pianke:daily-unlock:v1'), progress: read('pianke:progress:v1'), learned: read('pianke:learning-status:v1') }
+  })
+}
+
+async function createPlan(page: Page) {
+  await page.clock.install({ time: new Date(2026, 9, 28, 12) })
+  await page.goto('/?scenario=library#/pages/home/index', { waitUntil: 'domcontentloaded' })
+  await page.locator('.bottom-nav').getByLabel('设置').click()
+  await page.locator('.settings-menu-row').filter({ hasText: '每日课程' }).click()
+  await page.getByRole('switch', { name: '每日解锁课程' }).click()
+  await page.getByTestId('daily-unlock-manage').click()
+  await page.getByTestId('mode-videos').click()
+  await page.getByTestId('course-name').locator('input').fill('旅行学习计划')
+  for (const id of [SEA, MOUNTAIN, LIVE]) await page.locator(`[data-video-id="${id}"]`).click()
+  await page.getByTestId('create-course').click()
+  await expect(page.getByTestId('course-card')).toHaveCount(1)
+}
+
+test('first learning guide imports a source, creates a course and stays dismissed', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 740 })
+  await page.goto('/?scenario=first-run#/pages/home/index', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByTestId('learning-guide')).toBeVisible()
+  await page.getByTestId('learning-guide-start').click()
+  await page.getByTestId('library-learning-add').click()
+  await page.getByTestId('direct-url').locator('input').fill('https://media.example.test/guide.mp4')
+  await page.getByTestId('direct-name').locator('input').fill('第一堂学习课程')
+  await page.getByTestId('direct-save').click()
+  await page.getByTestId('library-learning-next').click()
+  await page.getByTestId('mode-videos').click()
+  await page.getByTestId('course-name').locator('input').fill('我的第一门课程')
+  await page.locator('[data-video-id]').filter({ hasText: '第一堂学习课程' }).click()
+  await page.getByTestId('create-course').click()
+  await expect(page.getByTestId('course-card')).toContainText('我的第一门课程')
+  expect(await page.evaluate(() => JSON.parse((window as any).uni.getStorageSync('pianke:learning-guide:v1')).status)).toBe('completed')
+  expect((await readLearning(page)).courses.enabled).toBe(true)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.evaluate(() => (window as any).uni.hideToast())
+  await page.waitForTimeout(2200)
+  await expect(page.locator('.uni-toast')).toBeHidden()
+  await page.screenshot({ path: testInfo.outputPath('first-learning-320.png'), fullPage: true })
+  await page.getByLabel('返回设置', { exact: true }).click()
+  await page.locator('.bottom-nav').getByLabel('首页').click()
+  const today = page.locator('[data-home-section="today"]')
+  await expect(today).toContainText('我的第一门课程')
+  await expect(today).toContainText('第一堂学习课程')
+  await expect(today.getByTestId('lesson-primary')).toContainText('开始学习')
+  await expect(page.getByTestId('learning-guide')).toHaveCount(0)
+  await page.goto('/?scenario=first-run#/pages/home/index', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('[data-home-section="today"]')).toBeVisible()
+  await expect(page.getByTestId('learning-guide')).toHaveCount(0)
+})
+
+test('batch learned range preserves actual playback and undo restores existing marks', async ({ page }) => {
+  await createPlan(page)
+  await page.getByLabel('返回设置', { exact: true }).click()
+  await page.locator('.bottom-nav').getByLabel('首页').click()
+  const lesson = page.locator(`[data-lesson-id="${SEA}"]`)
+  await lesson.getByTestId('lesson-more').click()
+  await page.getByLabel('标记学完：第2站·海边.mp4', { exact: true }).click()
+  await page.evaluate((videoId) => {
+    ;(window as any).uni.setStorageSync('pianke:progress:v1', JSON.stringify([
+      { videoId, positionSeconds: 120, durationSeconds: 1382, updatedAt: Date.now(), completed: false }
+    ]))
+  }, MOUNTAIN)
+  await page.locator('.bottom-nav').getByLabel('设置').click()
+  await page.locator('.settings-menu-row').filter({ hasText: '每日课程' }).click()
+  await page.getByTestId('daily-unlock-manage').click()
+  const before = await readLearning(page)
+  await page.getByTestId('course-more').click()
+  await page.getByTestId('batch-course').click()
+  await page.getByTestId('batch-start').locator('input').fill('1')
+  await page.getByTestId('batch-end').locator('input').fill('3')
+  await page.getByTestId('batch-submit').click()
+  await expect(page.getByTestId('batch-course-undo')).toBeVisible()
+  const marked = await readLearning(page)
+  expect(marked.progress).toEqual(before.progress)
+  expect(marked.courses).toEqual(before.courses)
+  expect(marked.learned.filter((item: any) => item.completed).map((item: any) => item.videoId).sort()).toEqual([SEA, MOUNTAIN, LIVE].sort())
+  await page.getByTestId('batch-undo').click()
+  const undone = await readLearning(page)
+  expect(undone).toEqual(before)
+})
+
+test('paused course previews resume without accumulating days and supports cancel', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 740 })
+  await createPlan(page)
+  await page.getByTestId('pause-course').click()
+  const paused = await readLearning(page)
+  expect(paused.courses.courses[0].pausedAt).toBeDefined()
+  await page.clock.fastForward(3 * 24 * 60 * 60 * 1000)
+  await page.getByTestId('pause-course').click()
+  const preview = page.getByTestId('resume-preview')
+  await expect(preview).toContainText('今天可学未完成：1 集')
+  await expect(preview).toContainText('明天新开放：1 集')
+  await expect(preview).toContainText('第10站·山间.mp4')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.evaluate(() => (window as any).uni.hideToast())
+  await page.clock.runFor(500)
+  await expect(page.locator('.uni-toast')).toBeHidden()
+  await page.screenshot({ path: testInfo.outputPath('resume-preview-320.png'), fullPage: true })
+  await page.getByTestId('resume-cancel').click()
+  await expect(preview).toHaveCount(0)
+  expect((await readLearning(page)).courses).toEqual(paused.courses)
+  await page.getByTestId('pause-course').click()
+  await page.getByTestId('resume-confirm').click()
+  await expect(preview).toHaveCount(0)
+  expect((await readLearning(page)).courses.courses[0].pausedAt).toBeUndefined()
+  await expect(page.getByTestId('course-card')).toContainText('已开放 1 / 3 集')
+})

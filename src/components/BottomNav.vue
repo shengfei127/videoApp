@@ -73,7 +73,7 @@ function navigate(key: NavKey, path: string): void {
   box-sizing: border-box;
   display: flex;
   min-width: 0;
-  min-height: 76rpx;
+  min-height: max(44px, 76rpx);
   flex-direction: column;
   align-items: center;
   justify-content: center;
