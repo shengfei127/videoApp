@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
-import { onReady } from '@dcloudio/uni-app'
+import { computed, onUnmounted, ref } from 'vue'
 import {
   ArrowLeft,
-  CircleAlert,
-  Cloud,
   LoaderCircle,
   RefreshCw,
   ShieldCheck
@@ -26,19 +23,17 @@ import {
 import { uniStorage } from '@/infrastructure/storage'
 import { useAppStore } from '@/stores/appStore'
 
-type OAuthPageStatus = 'opening' | 'missing-key' | 'cancelled' | 'error' | 'success'
+type OAuthPageStatus = 'idle' | 'opening' | 'missing-key' | 'cancelled' | 'error' | 'success'
 
 const store = useAppStore()
 const authRepository = new AuthRepository(uniStorage)
-const status = ref<OAuthPageStatus>('opening')
+const status = ref<OAuthPageStatus>('idle')
 const errorMessage = ref('')
 let webviewHandle: OAuthWebviewHandle | null = null
 let started = false
 let disposed = false
 
-onReady(() => {
-  startAuthorization()
-})
+const connectionTitle = computed(() => store.authSession ? '已连接百度网盘' : '连接百度网盘')
 
 onUnmounted(() => {
   disposed = true
@@ -205,205 +200,57 @@ function clearPendingSafely(): void {
 </script>
 
 <template>
-  <view class="oauth-page">
+  <view class="oauth-page oauth-page--premium">
     <header class="oauth-header">
-      <button
-        type="button"
-        data-testid="oauth-back"
-        class="oauth-icon-button"
-        aria-label="返回"
-        title="返回"
-        @click="goBack"
-      >
-        <ArrowLeft :size="22" aria-hidden="true" />
-      </button>
-      <view class="oauth-header__copy">
-        <text class="oauth-header__title">连接百度网盘</text>
-        <text class="oauth-header__path">{{ runtimeConfig.baiduRoot }}</text>
-      </view>
+      <button type="button" data-testid="oauth-back" class="oauth-icon-button" aria-label="返回" @click="goBack"><ArrowLeft :size="22" aria-hidden="true" /></button>
+      <text class="oauth-header__title">连接百度网盘</text>
     </header>
-
     <main class="oauth-content">
-      <view v-if="status === 'opening'" class="oauth-status" aria-live="polite">
-        <LoaderCircle
-          class="oauth-status__spinner"
-          :size="30"
-          aria-hidden="true"
-        />
-        <text class="oauth-status__title">正在打开百度授权</text>
-        <text class="oauth-status__detail">完成后将自动返回片刻</text>
+      <view class="oauth-brand-mark oauth-cloud" aria-hidden="true">
+        <view class="oauth-cloud__ring oauth-cloud__ring--top" />
+        <view class="oauth-cloud__ring oauth-cloud__ring--left" />
+        <view class="oauth-cloud__ring oauth-cloud__ring--right" />
+        <view class="oauth-cloud__base" />
+        <view class="oauth-cloud__dot" />
+        <view v-if="store.authSession || status === 'success'" class="oauth-cloud__check">✓</view>
       </view>
-
-      <view v-else-if="status === 'success'" class="oauth-status" aria-live="polite">
-        <ShieldCheck :size="32" aria-hidden="true" />
-        <text class="oauth-status__title">授权已完成</text>
+      <view class="oauth-status" aria-live="polite">
+        <text v-if="errorMessage" class="oauth-status__title" role="alert">{{ errorMessage }}</text>
+        <text v-else class="oauth-status__title">{{ status === 'opening' ? '正在打开百度授权' : status === 'success' ? '授权已完成' : connectionTitle }}</text>
+        <text class="oauth-status__detail">{{ status === 'opening' ? '完成后将自动返回片刻' : '连接网盘 · 同步视频目录' }}</text>
       </view>
-
-      <view v-else class="oauth-status">
-        <CircleAlert :size="32" aria-hidden="true" />
-        <text class="oauth-status__title" role="alert">{{ errorMessage }}</text>
-        <text v-if="status === 'missing-key'" class="oauth-status__detail">
-          请在本机环境配置中填写公开 AppKey
-        </text>
-        <view class="oauth-actions">
-          <button
-            v-if="status === 'error' || status === 'cancelled'"
-            type="button"
-            class="oauth-action oauth-action--primary"
-            aria-label="重新发起百度授权"
-            @click="retry"
-          >
-            <RefreshCw :size="19" aria-hidden="true" />
-            <text>重试</text>
-          </button>
-          <button
-            type="button"
-            class="oauth-action oauth-action--secondary"
-            aria-label="返回上一页"
-            @click="goBack"
-          >
-            <Cloud :size="19" aria-hidden="true" />
-            <text>返回</text>
-          </button>
-        </view>
-      </view>
+      <button type="button" data-testid="oauth-start" class="oauth-action oauth-action--primary" :disabled="status === 'opening'" :aria-label="status === 'error' || status === 'cancelled' ? '重新发起百度授权' : '授权并同步'" @click="status === 'idle' ? startAuthorization() : retry()">{{ status === 'opening' ? '正在授权…' : '授权并同步' }}</button>
+      <LoaderCircle v-if="status === 'opening'" class="oauth-status__spinner" :size="18" aria-hidden="true" />
+      <RefreshCw v-else class="oauth-sync-symbol" :size="17" aria-hidden="true" />
+      <view class="oauth-privacy"><ShieldCheck :size="19" aria-hidden="true" /><text>仅访问片刻应用目录中的视频，
+播放记录和课程进度保存在本机。</text></view>
     </main>
   </view>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
-
-.oauth-page {
-  box-sizing: border-box;
-  min-height: 100vh;
-  padding: calc(var(--status-bar-height, 0px) + 24rpx) 24rpx 32rpx;
-  background: $color-bg;
-}
-
-.oauth-header {
-  display: grid;
-  grid-template-columns: 76rpx minmax(0, 1fr);
-  gap: 16rpx;
-  align-items: center;
-  min-height: 92rpx;
-}
-
-.oauth-icon-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 76rpx;
-  height: 76rpx;
-  margin: 0;
-  padding: 0;
-  border: 1px solid $color-border;
-  border-radius: $radius-control;
-  color: $color-text;
-  background: $color-surface;
-}
-
-.oauth-header__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4rpx;
-}
-
-.oauth-header__title {
-  font-size: 31rpx;
-  font-weight: 740;
-  line-height: 1.3;
-}
-
-.oauth-header__path {
-  overflow: hidden;
-  color: $color-muted;
-  font-size: 21rpx;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oauth-content {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: calc(100vh - 180rpx);
-}
-
-.oauth-status {
-  box-sizing: border-box;
-  display: flex;
-  width: min(100%, 620rpx);
-  flex-direction: column;
-  gap: 14rpx;
-  align-items: center;
-  padding: 34rpx 28rpx;
-  border: 1px solid $color-border;
-  border-radius: $radius-card;
-  color: $color-primary;
-  text-align: center;
-  background: $color-surface;
-}
-
-.oauth-status__spinner {
-  animation: oauth-spin 0.9s linear infinite;
-}
-
-.oauth-status__title {
-  color: $color-text;
-  font-size: 28rpx;
-  font-weight: 720;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.oauth-status__detail {
-  color: $color-muted;
-  font-size: 22rpx;
-  line-height: 1.5;
-}
-
-.oauth-actions,
-.oauth-action {
-  display: flex;
-  align-items: center;
-}
-
-.oauth-actions {
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12rpx;
-  margin-top: 10rpx;
-}
-
-.oauth-action {
-  box-sizing: border-box;
-  gap: 8rpx;
-  justify-content: center;
-  min-width: 152rpx;
-  min-height: 74rpx;
-  margin: 0;
-  padding: 12rpx 20rpx;
-  border: 1px solid $color-primary;
-  border-radius: $radius-control;
-  font-size: 23rpx;
-  font-weight: 700;
-}
-
-.oauth-action--primary {
-  color: #ffffff;
-  background: $color-primary;
-}
-
-.oauth-action--secondary {
-  color: $color-primary;
-  background: $color-primary-soft;
-}
-
-@keyframes oauth-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+.oauth-page { box-sizing: border-box; min-height: 100vh; padding: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 22rpx) 40rpx 40rpx; background: $color-surface; }
+.oauth-header { display: flex; align-items: center; min-height: 80rpx; }
+.oauth-icon-button { display: flex; width: 38rpx; height: 70rpx; align-items: center; justify-content: center; margin: 0 20rpx 0 0; padding: 0; border: 0; background: transparent; }
+.oauth-header__title { font-size: 30rpx; font-weight: 650; }
+.oauth-content { display: flex; flex-direction: column; align-items: center; padding-top: 100rpx; }
+.oauth-cloud { position: relative; width: 230rpx; height: 190rpx; margin-bottom: 65rpx; }
+.oauth-cloud__ring { position: absolute; box-sizing: border-box; border: 26rpx solid #3ca9e8; border-radius: 50%; }
+.oauth-cloud__ring--top { top: 0; left: 50rpx; width: 130rpx; height: 130rpx; }
+.oauth-cloud__ring--left { top: 58rpx; left: 8rpx; width: 108rpx; height: 108rpx; }
+.oauth-cloud__ring--right { top: 64rpx; right: 6rpx; width: 102rpx; height: 102rpx; }
+.oauth-cloud__base { position: absolute; bottom: 25rpx; left: 58rpx; width: 113rpx; height: 28rpx; background: #3ca9e8; }
+.oauth-cloud__dot { position: absolute; top: 78rpx; left: 129rpx; width: 29rpx; height: 29rpx; border-radius: 50%; background: #ff9b7f; }
+.oauth-cloud__check { position: absolute; right: -4rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 78rpx; height: 78rpx; border: 12rpx solid $color-surface; border-radius: 50%; color: #fff; background: $color-primary; font-size: 42rpx; }
+.oauth-status { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.oauth-status__title { color: $color-text; font-size: 34rpx; font-weight: 650; line-height: 1.45; }
+.oauth-status__detail { margin-top: 12rpx; color: $color-muted; font-size: 26rpx; }
+.oauth-action { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 94rpx; margin: 48rpx 0 0; border: 0; border-radius: 999px; color: #fff; font-size: 30rpx; font-weight: 600; background: $color-primary; }
+.oauth-action:disabled { opacity: .65; }
+.oauth-sync-symbol, .oauth-status__spinner { margin: 34rpx 0; opacity: .55; }
+.oauth-status__spinner { animation: oauth-spin .9s linear infinite; }
+.oauth-privacy { display: flex; align-items: center; width: 100%; box-sizing: border-box; padding: 26rpx; border-radius: 12px; color: $color-muted; font-size: 22rpx; line-height: 1.7; background: #efede5; }
+.oauth-privacy text { margin-left: 18rpx; white-space: pre-line; }
+@keyframes oauth-spin { to { transform: rotate(360deg); } }
 </style>

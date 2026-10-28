@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { House, LibraryBig, Settings } from '@/components/icons'
+import { CalendarDays, House, SquarePlay, Settings } from '@/components/icons'
 
-type NavKey = 'home' | 'library' | 'settings'
+type NavKey = 'home' | 'library' | 'course' | 'settings'
 
 const props = defineProps<{ active: NavKey }>()
 
@@ -11,7 +11,13 @@ const items = [
     key: 'library',
     label: '视频库',
     path: '/pages/library/index',
-    icon: LibraryBig
+    icon: SquarePlay
+  },
+  {
+    key: 'course',
+    label: '每日课程',
+    path: '/pages/daily-unlock/index',
+    icon: CalendarDays
   },
   {
     key: 'settings',
@@ -31,7 +37,7 @@ function navigate(key: NavKey, path: string): void {
 </script>
 
 <template>
-  <view class="bottom-nav" role="navigation" aria-label="主导航">
+  <view class="bottom-nav bottom-nav--premium" role="navigation" aria-label="主导航">
     <button
       v-for="item in items"
       :key="item.key"
@@ -63,46 +69,49 @@ function navigate(key: NavKey, path: string): void {
   left: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8rpx;
-  padding: 8rpx 24rpx max(8rpx, env(safe-area-inset-bottom));
-  border-top: 1px solid $color-border;
-  background: $color-surface;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 6rpx 20rpx max(7rpx, env(safe-area-inset-bottom));
+  border-top: 1px solid rgba($color-border, 0.8);
+  background: rgba($color-surface, 0.98);
 }
 
 .bottom-nav__item {
   box-sizing: border-box;
   display: flex;
+  min-width: 0;
+  min-height: 76rpx;
   flex-direction: column;
-  gap: 4rpx;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  min-width: 0;
-  min-height: 88rpx;
-  margin: 0;
-  padding: 8rpx 6rpx;
+  margin: 0 4rpx;
+  padding: 5rpx 4rpx;
   border: 0;
-  border-radius: $radius-control;
+  border-radius: 0;
   color: $color-muted;
-  font-size: 22rpx;
+  font-size: 20rpx;
   line-height: 1.2;
   background: transparent;
 }
 
 .bottom-nav__item--active {
   color: $color-primary;
-  background: $color-primary-soft;
+  background: transparent;
+}
+
+.bottom-nav__label {
+  display: block;
+  max-width: 100%;
+  margin-top: 3rpx;
+  overflow: hidden;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bottom-nav__item:focus-visible {
   outline: 2px solid $color-primary;
   outline-offset: 2px;
 }
-
-.bottom-nav__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.bottom-nav__item .app-icon { opacity: .65; }
+.bottom-nav__item--active .app-icon { opacity: 1; filter: brightness(.65) sepia(1) saturate(5) hue-rotate(115deg); }
 </style>

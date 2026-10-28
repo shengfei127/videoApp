@@ -2,8 +2,8 @@
     "name" : "片刻",
     "appid" : "__UNI__8831D47",
     "description" : "Pianke Android video player",
-    "versionName" : "1.0.7",
-    "versionCode" : 107,
+    "versionName" : "1.0.9",
+    "versionCode" : 109,
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,
@@ -12,6 +12,15 @@
         },
         "screenOrientation" : [ "portrait-primary", "landscape-primary", "landscape-secondary" ],
         "distribute" : {
+            "icons" : {
+                "android" : {
+                    "mdpi" : "src/static/brand/icon-48.png",
+                    "hdpi" : "src/static/brand/icon-72.png",
+                    "xhdpi" : "src/static/brand/icon-96.png",
+                    "xxhdpi" : "src/static/brand/icon-144.png",
+                    "xxxhdpi" : "src/static/brand/icon-192.png"
+                }
+            },
             "android" : {
                 "packagename" : "com.shengfei127.pianke",
                 "permissions" : [

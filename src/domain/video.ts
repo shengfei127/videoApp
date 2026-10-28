@@ -28,6 +28,34 @@ export interface PlaybackProgress {
   completed: boolean
 }
 
+export interface DailyUnlockEpisode {
+  videoId: string
+  name: string
+  sourceType: VideoSourceType
+  path?: string
+}
+
+export interface DailyUnlockCourse {
+  id: string
+  name: string
+  createdAt: number
+  sourceFolderPath?: string
+  episodes: DailyUnlockEpisode[]
+}
+
+export interface DailyUnlockSettings {
+  enabled: boolean
+  courses: DailyUnlockCourse[]
+}
+
+export interface VideoUnlockStatus {
+  locked: boolean
+  courseId?: string
+  courseName?: string
+  episodeNumber?: number
+  unlockedCount?: number
+  unlockAt?: number
+}
 export interface BaiduAuthSession {
   accessToken: string
   expiresAt: number

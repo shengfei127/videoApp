@@ -15,9 +15,11 @@ describe('BottomNav', () => {
     const destinations = [
       ['首页', '/pages/home/index'],
       ['视频库', '/pages/library/index'],
+      ['每日课程', '/pages/daily-unlock/index'],
       ['设置', '/pages/settings/index']
     ] as const
 
+    expect(wrapper.get('.bottom-nav').classes()).toContain('bottom-nav--premium')
     expect(items).toHaveLength(destinations.length)
     expect(items.map((item) => item.attributes('aria-label'))).toEqual(
       destinations.map(([label]) => label)
@@ -86,6 +88,35 @@ describe('VideoRow', () => {
     expect(wrapper.get('.video-row__metadata').text()).toContain('时长 10:00')
   })
 
+  it('marks a locked course episode without displaying any media URL', () => {
+    const video: VideoItem = {
+      id: 'direct:locked',
+      sourceType: 'direct',
+      sourceId: 'locked',
+      name: '第2集.m3u8',
+      path: 'https://media.example.test/lesson.m3u8?sign=secret'
+    }
+    const wrapper = mount(VideoRow, {
+      props: {
+        video,
+        unlockStatus: {
+          locked: true,
+          courseId: 'course-1',
+          courseName: '听力课',
+          episodeNumber: 2,
+          unlockedCount: 1,
+          unlockAt: new Date(2026, 9, 28).getTime()
+        }
+      }
+    })
+
+    expect(wrapper.get('button.video-row').attributes('aria-label')).toContain('第2集')
+    expect(wrapper.text()).toContain('待解锁')
+    expect(wrapper.text()).toContain('2026-10-28 00:00')
+    expect(wrapper.text()).not.toContain('media.example.test')
+    expect(wrapper.text()).not.toContain('secret')
+  })
+
   it('shows a valid absolute Baidu path whose directory name contains sign', () => {
     const path = '/apps/\u7247\u523b/design/episode.mp4'
     const video: VideoItem = {
@@ -102,32 +133,56 @@ describe('VideoRow', () => {
 })
 
 describe('Home page', () => {
-  it('shows both first-run source actions early and uses their exact routes', async () => {
-    const { wrapper } = mountHome()
-    const actions = wrapper.findAll('button.home-source-action')
-
-    expect(wrapper.text()).toContain('片刻')
-    expect(actions.map((action) => action.text())).toEqual([
-      expect.stringContaining('连接百度网盘'),
-      expect.stringContaining('导入媒体直链')
-    ])
-    expect(wrapper.get('button[aria-label="首页"]').attributes('aria-current')).toBe(
-      'page'
-    )
-
-    await actions[0]!.trigger('click')
-    expect(uni.navigateTo).toHaveBeenCalledTimes(1)
-    expect(uni.navigateTo).toHaveBeenLastCalledWith({ url: '/pages/oauth/index' })
-
-    vi.mocked(uni.navigateTo).mockClear()
-    await actions[1]!.trigger('click')
-    expect(uni.navigateTo).toHaveBeenCalledTimes(1)
-    expect(uni.navigateTo).toHaveBeenLastCalledWith({
-      url: '/pages/library/index?openImport=1'
+  it('keeps unseen catalog videos out of recent videos and explains the empty history', () => {
+    const video: VideoItem = {
+      id: 'baidu:unwatched',
+      sourceType: 'baidu',
+      sourceId: 'unwatched',
+      name: '还没看过.mp4',
+      path: '/apps/片刻/还没看过.mp4'
+    }
+    const { wrapper } = mountHome((store) => {
+      store.baiduVideos = [video]
     })
+
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(0)
+    expect(wrapper.text()).toContain('看过视频后会显示在这里')
   })
 
-  it('keeps source actions visible when disconnected with only stale Baidu cache', () => {
+  it('keeps the first-run home aligned to the design without a large onboarding panel', () => {
+    const { wrapper } = mountHome()
+
+    expect(wrapper.text()).toContain('片刻')
+    expect(wrapper.find('.home-brand-mark').exists()).toBe(true)
+    expect(wrapper.find('.home-resume').exists()).toBe(false)
+    expect(wrapper.find('.home-sources').exists()).toBe(false)
+    expect(wrapper.get('#recent-videos-title').text()).toBe('最近看过')
+    expect(wrapper.get('button[aria-label="首页"]').attributes('aria-current')).toBe('page')
+  })
+
+  it('matches the designed header controls and resume card layout', () => {
+    const video: VideoItem = {
+      id: 'baidu:resume-header',
+      sourceType: 'baidu',
+      sourceId: 'resume-header',
+      name: '海边的第一天.mp4',
+      path: '/apps/片刻/海边的第一天.mp4',
+      durationSeconds: 600
+    }
+    const { wrapper } = mountHome((store) => {
+      store.baiduVideos = [video]
+      store.resumableProgress = [
+        { videoId: video.id, positionSeconds: 120, durationSeconds: 600, updatedAt: 10, completed: false }
+      ]
+    })
+
+    expect(wrapper.find('button.home-header__icon-button').exists()).toBe(true)
+    expect(wrapper.find('.home-header__status').exists()).toBe(false)
+    expect(wrapper.get('.home-resume').classes()).toContain('home-resume--hero')
+    expect(wrapper.find('.home-resume__controls').exists()).toBe(true)
+  })
+
+  it('keeps stale cached videos out of the source onboarding panel', () => {
     const { store, wrapper } = mountHome((appStore) => {
       appStore.baiduVideos = [
         {
@@ -143,12 +198,7 @@ describe('Home page', () => {
     expect(store.authSession).toBeNull()
     expect(store.directRecords).toEqual([])
     expect(store.mergedVideos).toHaveLength(1)
-    expect(
-      wrapper.findAll('button.home-source-action').map((action) => action.text())
-    ).toEqual([
-      expect.stringContaining('连接百度网盘'),
-      expect.stringContaining('导入媒体直链')
-    ])
+    expect(wrapper.find('.home-sources').exists()).toBe(false)
   })
 
   it('puts resume first with the saved timestamp, clamped progress, and encoded player route', async () => {
@@ -181,6 +231,8 @@ describe('Home page', () => {
     expect(sections[0]?.attributes('data-home-section')).toBe('continue')
     expect(sections[0]?.text()).toContain('接着看')
     expect(sections[0]?.text()).toContain('06:26')
+    expect(wrapper.get('.home-resume__eyebrow').text()).toBe('接着看')
+    expect(wrapper.get('.home-resume__timestamp').text()).toBe('06:26 / 26:00')
     const progress = wrapper.get('[role="progressbar"]')
     expect(progress.attributes('aria-valuemin')).toBe('0')
     expect(progress.attributes('aria-valuemax')).toBe('100')
@@ -221,6 +273,22 @@ describe('Home page', () => {
           addedAt: 100
         }
       ]
+      store.progressHistory = [
+        ...baiduVideos.map((video, index) => ({
+          videoId: video.id,
+          positionSeconds: index === 0 ? 600 : 120,
+          durationSeconds: 600,
+          updatedAt: 200 - index,
+          completed: index === 0
+        })),
+        {
+          videoId: `direct:${directId}`,
+          positionSeconds: 30,
+          durationSeconds: 600,
+          updatedAt: 300,
+          completed: false
+        }
+      ]
       store.syncStatus = 'error'
       store.lastError = {
         code: 'sync-failed',
@@ -230,11 +298,8 @@ describe('Home page', () => {
     })
     const rows = wrapper.findAllComponents(VideoRow)
 
-    expect(wrapper.text()).toContain('最近视频')
+    expect(wrapper.text()).toContain('最近看过')
     expect(rows).toHaveLength(6)
-    expect(wrapper.get('[data-testid="sync-status"]').text()).toBe(
-      '同步状态：同步异常'
-    )
     expect(wrapper.text()).toContain('百度网盘同步失败，请稍后重试')
     expect(wrapper.text()).toContain('媒体直链')
     for (const secret of [

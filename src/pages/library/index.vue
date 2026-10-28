@@ -15,6 +15,7 @@ import DirectLinkSheet from '@/components/DirectLinkSheet.vue'
 import VideoRow from '@/components/VideoRow.vue'
 import type { DirectVideoRecord, VideoFolder, VideoItem } from '@/domain/video'
 import { DirectLinkService } from '@/features/direct-links/directLinkService'
+import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 import { uniStorage } from '@/infrastructure/storage'
 import { useAppStore } from '@/stores/appStore'
 
@@ -38,7 +39,7 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined
 
 const hasSearch = computed(() => Boolean(store.searchQuery.trim()))
 const listedVideos = computed(() =>
-  hasSearch.value ? store.searchResults : store.recentVideos
+  hasSearch.value ? store.searchResults : store.catalogRecentVideos
 )
 const visibleListedVideos = computed(() =>
   listedVideos.value.slice(0, visibleLimit.value)
@@ -51,6 +52,9 @@ const breadcrumbs = computed(() =>
 )
 const visibleFolders = computed(() =>
   activeFolder.value.folders.slice(0, visibleLimit.value)
+)
+const visibleRootFolders = computed(() =>
+  store.folderTree.folders.slice(0, visibleLimit.value)
 )
 const visibleFolderVideos = computed(() =>
   activeFolder.value.videos.slice(
@@ -72,6 +76,8 @@ const refreshDisabled = computed(() => {
     (typeof retryAt === 'number' && retryAt > cooldownClock.value)
   )
 })
+
+useDailyUnlockClock((now) => store.refreshDailyUnlockClock(now))
 
 watch(
   () => store.nextSyncAllowedAt,
@@ -102,12 +108,11 @@ onLoad((query) => {
 function setView(view: LibraryView): void {
   activeView.value = view
   resetVisibleLimit()
-  if (view === 'folders') {
-    activeFolderPath.value = store.folderTree.path
-  }
+  activeFolderPath.value = store.folderTree.path
 }
 
 function enterFolder(folder: VideoFolder): void {
+  activeView.value = 'folders'
   activeFolderPath.value = folder.path
   resetVisibleLimit()
 }
@@ -144,6 +149,15 @@ function openPlayer(video: VideoItem): void {
     return
   }
 
+  const unlockStatus = store.videoUnlockStatus(video.id)
+  if (unlockStatus.locked) {
+    uni.showToast({
+      title: `第${unlockStatus.episodeNumber ?? ''}集将于 ${formatUnlockTime(unlockStatus.unlockAt)} 解锁`,
+      icon: 'none'
+    })
+    return
+  }
+
   uni.navigateTo({
     url: `/pages/player/index?id=${encodeURIComponent(video.id)}`
   })
@@ -174,6 +188,12 @@ async function refreshCatalog(): Promise<void> {
   } finally {
     refreshing.value = false
   }
+}
+
+function formatUnlockTime(timestamp: number | undefined): string {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return '后续日期零点'
+  const date = new Date(timestamp)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} 00:00`
 }
 
 function countFolderVideos(folder: VideoFolder): number {
@@ -263,39 +283,24 @@ function findFolderTrail(
 </script>
 
 <template>
-  <view class="page-shell library-page">
-    <header class="library-header">
+  <view class="page-shell library-page library-page--premium">
+    <header class="library-header library-header--premium">
       <view class="library-header__copy">
         <text class="library-header__title">视频库</text>
-        <text class="library-header__count">
-          本机目录 {{ store.mergedVideos.length }} 项
-        </text>
       </view>
       <view class="library-header__actions">
-        <button
-          type="button"
-          data-testid="library-refresh"
-          class="library-icon-button"
-          aria-label="刷新百度视频目录"
-          title="刷新"
-          :disabled="refreshDisabled"
-          @click="refreshCatalog"
-        >
-          <RefreshCw
-            :size="21"
-            :class="{ 'library-icon--spinning': refreshing }"
-            aria-hidden="true"
-          />
+        <button type="button" data-testid="library-refresh" class="library-refresh-button" aria-label="刷新百度视频目录" title="刷新" :disabled="refreshDisabled" @click="refreshCatalog">
+          <RefreshCw :size="18" :class="{ 'library-icon--spinning': refreshing }" aria-hidden="true" />
         </button>
         <button
-          type="button"
-          data-testid="library-add"
-          class="library-icon-button library-icon-button--primary"
-          aria-label="导入媒体直链"
-          title="导入媒体直链"
-          @click="openNewImport"
-        >
-          <Plus :size="22" aria-hidden="true" />
+        type="button"
+        data-testid="library-add"
+        class="library-add-button"
+        aria-label="导入媒体直链"
+        title="导入媒体直链"
+        @click="openNewImport"
+      >
+        <Plus :size="23" aria-hidden="true" />
         </button>
       </view>
     </header>
@@ -308,7 +313,7 @@ function findFolderTrail(
         type="text"
         confirm-type="search"
         autocorrect="off"
-        placeholder="搜索已同步的视频"
+        placeholder="搜索视频或文件夹"
         aria-label="搜索本地视频名称或路径"
       />
     </label>
@@ -321,7 +326,7 @@ function findFolderTrail(
         :aria-pressed="activeView === 'recent'"
         @click="setView('recent')"
       >
-        最近视频
+        最近
       </button>
       <button
         type="button"
@@ -330,19 +335,19 @@ function findFolderTrail(
         :aria-pressed="activeView === 'folders'"
         @click="setView('folders')"
       >
-        按文件夹
+        文件夹
       </button>
     </view>
 
     <main class="library-content">
       <template v-if="hasSearch || activeView === 'recent'">
-        <view v-if="listedVideos.length" class="library-video-list">
+        <view v-if="listedVideos.length" class="library-video-list library-video-grid">
           <view
             v-for="video in visibleListedVideos"
             :key="video.id"
             class="library-video-entry"
           >
-            <VideoRow :video="video" @select="openPlayer" />
+            <VideoRow :video="video" display="card" :unlock-status="store.videoUnlockStatus(video.id)" @select="openPlayer" />
             <button
               v-if="video.sourceType === 'direct'"
               type="button"
@@ -372,9 +377,38 @@ function findFolderTrail(
         >
           加载更多
         </button>
+
+        <section v-if="!hasSearch && store.folderTree.folders.length" class="library-folder-section" aria-labelledby="library-folder-title">
+          <view class="library-section-heading">
+            <text id="library-folder-title">文件夹</text>
+          </view>
+          <view class="library-folder-list library-folder-list--home">
+            <button
+              v-for="folder in visibleRootFolders"
+              :key="folder.path"
+              type="button"
+              data-testid="folder-row"
+              class="library-folder-row"
+              :aria-label="`打开文件夹 ${folder.name}`"
+              @click="enterFolder(folder)"
+            >
+              <Folder :size="19" aria-hidden="true" />
+              <view class="library-folder-row__copy">
+                <text class="library-folder-row__name">{{ folder.name }}</text>
+                <text class="library-folder-row__count">{{ countFolderVideos(folder) }} 个视频</text>
+              </view>
+              <ChevronRight :size="18" aria-hidden="true" />
+            </button>
+          </view>
+        </section>
       </template>
 
       <template v-else>
+        <view class="library-section-heading library-section-heading--folder-view">
+          <text>文件夹</text>
+          <view class="library-section-heading__actions">
+          </view>
+        </view>
         <nav class="library-breadcrumbs" aria-label="文件夹路径">
           <button
             v-for="folder in breadcrumbs"
@@ -416,7 +450,7 @@ function findFolderTrail(
             :key="video.id"
             class="library-video-entry"
           >
-            <VideoRow :video="video" @select="openPlayer" />
+            <VideoRow :video="video" display="card" :unlock-status="store.videoUnlockStatus(video.id)" @select="openPlayer" />
           </view>
         </view>
 
@@ -455,7 +489,7 @@ function findFolderTrail(
 @use '@/styles/tokens.scss' as *;
 
 .library-page {
-  padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 24rpx);
+  padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 26rpx);
 }
 
 .library-header,
@@ -469,33 +503,52 @@ function findFolderTrail(
 
 .library-header {
   justify-content: space-between;
-  gap: 20rpx;
-  min-height: 92rpx;
+  min-height: 88rpx;
 }
 
 .library-header__copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4rpx;
 }
 
 .library-header__title {
-  font-size: 36rpx;
-  font-weight: 760;
+  color: $color-text;
+  font-size: 38rpx;
+  font-weight: 680;
   line-height: 1.2;
 }
 
 .library-header__count {
+  margin-top: 5rpx;
   color: $color-muted;
-  font-size: 21rpx;
-  line-height: 1.35;
+  font-size: 20rpx;
+  line-height: 1.4;
 }
 
-.library-header__actions {
-  flex: 0 0 auto;
-  gap: 12rpx;
+.library-header__actions { display: flex; align-items: center; flex: 0 0 auto; }
+
+.library-add-button,
+.library-refresh-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: $color-text;
+  background: transparent;
 }
+
+.library-add-button { width: 54rpx; height: 54rpx; color: $color-primary; }
+.library-add-button--small { width: 48rpx; height: 48rpx; }
+.library-refresh-button { width: 46rpx; height: 46rpx; color: $color-muted; }
+.library-section-heading { display: flex; align-items: center; justify-content: space-between; margin: 24rpx 2rpx 8rpx; color: $color-text; font-size: 24rpx; font-weight: 650; }
+.library-section-heading--folder-view { margin-top: 18rpx; }
+.library-section-heading__actions { display: flex; align-items: center; }
+.library-folder-list--home { border: 0; border-radius: 0; background: transparent; }
+.library-folder-list--home .library-folder-row { min-height: 78rpx; padding: 12rpx 2rpx; }
+.library-folder-list--home .library-folder-row + .library-folder-row { border-top: 1px solid $color-border; }
 
 .library-icon-button,
 .library-manage-button {
@@ -505,46 +558,47 @@ function findFolderTrail(
   margin: 0;
   padding: 0;
   border: 1px solid $color-border;
-  border-radius: $radius-control;
+  border-radius: 14px;
   color: $color-text;
   background: $color-surface;
 }
 
 .library-icon-button {
-  width: 76rpx;
-  height: 76rpx;
+  width: 74rpx;
+  height: 74rpx;
+  margin-left: 10rpx;
 }
 
 .library-icon-button--primary {
   border-color: $color-primary;
-  color: #ffffff;
+  color: #fff;
   background: $color-primary;
 }
 
 .library-icon-button:disabled {
-  cursor: not-allowed;
   opacity: 0.46;
 }
 
 .library-search {
   box-sizing: border-box;
-  gap: 12rpx;
   width: 100%;
-  height: 78rpx;
-  margin-top: 20rpx;
-  padding: 0 18rpx;
+  height: 64rpx;
+  margin-top: 8rpx;
+  padding: 0 20rpx;
   border: 1px solid $color-border;
-  border-radius: $radius-control;
+  border-radius: 16px;
   color: $color-muted;
-  background: $color-surface;
+  background: #efede5;
+  box-shadow: none;
 }
 
 .library-search input {
   min-width: 0;
   flex: 1;
   height: 100%;
+  margin-left: 12rpx;
   color: $color-text;
-  font-size: 24rpx;
+  font-size: 23rpx;
 }
 
 .library-segment {
@@ -552,12 +606,11 @@ function findFolderTrail(
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
-  height: 76rpx;
-  margin-top: 18rpx;
-  padding: 4rpx;
-  border: 1px solid $color-border;
-  border-radius: $radius-control;
-  background: #e9ece9;
+  height: 78rpx;
+  margin-top: 8rpx;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .library-segment__button {
@@ -565,66 +618,78 @@ function findFolderTrail(
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 100%;
   min-width: 0;
   height: 66rpx;
   margin: 0;
   padding: 0 14rpx;
   border: 0;
-  border-radius: 4px;
+  border-radius: 12px;
   color: $color-muted;
-  font-size: 23rpx;
-  font-weight: 700;
+  font-size: 22rpx;
+  font-weight: 560;
   line-height: 1.2;
   background: transparent;
 }
 
-.library-segment__button--active {
-  color: $color-primary;
-  background: $color-surface;
-}
+.library-segment__button { position: relative; font-size: 26rpx; }
+.library-segment__button--active { color: $color-primary; font-weight: 650; }
+.library-segment__button--active::before { position: absolute; bottom: 4rpx; left: 41%; right: 41%; height: 3rpx; background: $color-primary; content: ''; }
 
 .library-content {
-  margin-top: 22rpx;
+  margin-top: 4rpx;
 }
 
-.library-video-list,
-.library-folder-list {
-  border-top: 1px solid $color-border;
-  border-bottom: 1px solid $color-border;
-  background: rgba($color-surface, 0.62);
+.library-video-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  margin: -7rpx;
 }
 
 .library-video-entry {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12rpx;
-  align-items: center;
-  padding: 0 18rpx;
+  position: relative;
+  min-width: 0;
+  margin: 7rpx;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-.library-video-entry + .library-video-entry,
-.library-folder-row + .library-folder-row {
-  border-top: 1px solid $color-border;
-}
+.library-video-entry :deep(.video-row--card) { width: 100%; }
 
-.library-video-entry > :only-child {
-  grid-column: 1 / -1;
+.library-video-entry :deep(.video-thumbnail) { padding-bottom: 40%; border-radius: 6px; }
+
+.library-video-entry :deep(.video-row__content) { margin-top: 8rpx; }
+
+.library-video-entry :deep(.video-row__name) { font-size: 27rpx; line-height: 1.3; }
+.library-video-entry :deep(.video-row__metadata) { font-size: 21rpx; }
+
+.library-video-entry :deep(.video-row__unlock) {
+  margin-top: 7rpx;
 }
 
 .library-manage-button {
-  width: 68rpx;
-  height: 68rpx;
+  position: absolute;
+  top: 16rpx;
+  right: 16rpx;
+  width: 58rpx;
+  height: 58rpx;
+  border-color: rgba(255, 254, 249, 0.8);
+  border-radius: 50%;
   color: $color-primary;
+  background: rgba($color-surface, 0.94);
+  box-shadow: 0 4rpx 14rpx rgba(22, 47, 37, 0.14);
 }
+
+.library-folder-list { overflow: hidden; border: 0; border-radius: 0; background: transparent; }
 
 .library-folder-row {
   box-sizing: border-box;
-  gap: 16rpx;
   width: 100%;
-  min-height: 92rpx;
+  min-height: 84rpx;
   margin: 0;
-  padding: 16rpx 18rpx;
+  padding: 18rpx 20rpx;
   border: 0;
   border-radius: 0;
   color: $color-primary;
@@ -632,60 +697,64 @@ function findFolderTrail(
   background: transparent;
 }
 
+.library-folder-row + .library-folder-row {
+  border-top: 1px solid $color-border;
+}
+
 .library-folder-row__copy {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 4rpx;
+  margin: 0 14rpx;
 }
 
 .library-folder-row__name {
   overflow: hidden;
   color: $color-text;
-  font-size: 26rpx;
-  font-weight: 680;
+  font-size: 24rpx;
+  font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .library-folder-row__count {
+  margin-top: 5rpx;
   color: $color-muted;
-  font-size: 21rpx;
+  font-size: 19rpx;
 }
 
 .library-breadcrumbs {
-  gap: 8rpx;
   overflow-x: auto;
-  margin-bottom: 16rpx;
-  padding-bottom: 4rpx;
+  margin-bottom: 14rpx;
 }
 
 .library-breadcrumb {
   flex: 0 0 auto;
   min-height: 58rpx;
-  margin: 0;
+  margin: 0 6rpx 0 0;
   padding: 8rpx 14rpx;
   border: 0;
-  border-radius: $radius-control;
-  color: $color-primary;
-  font-size: 22rpx;
+  border-radius: 999px;
+  color: $color-muted;
+  font-size: 20rpx;
   background: transparent;
 }
 
 .library-breadcrumb[aria-current='page'] {
-  color: $color-text;
+  color: $color-primary;
   background: $color-primary-soft;
 }
 
 .library-empty-band {
-  padding: 28rpx 18rpx;
-  border-top: 1px solid $color-border;
-  border-bottom: 1px solid $color-border;
+  padding: 36rpx 24rpx;
+  border: 1px dashed $color-border;
+  border-radius: 16px;
   color: $color-muted;
-  font-size: 23rpx;
-  line-height: 1.45;
-  background: rgba($color-surface, 0.5);
+  font-size: 22rpx;
+  line-height: 1.5;
+  text-align: center;
+  background: rgba($color-surface, 0.64);
 }
 
 .library-load-more {
@@ -695,13 +764,13 @@ function findFolderTrail(
   justify-content: center;
   width: 100%;
   min-height: 72rpx;
-  margin: 14rpx 0 0;
+  margin: 18rpx 0 0;
   padding: 10rpx 18rpx;
-  border: 1px solid $color-primary;
-  border-radius: $radius-control;
+  border: 1px solid $color-border;
+  border-radius: 14px;
   color: $color-primary;
-  font-size: 22rpx;
-  font-weight: 700;
+  font-size: 21rpx;
+  font-weight: 620;
   background: $color-primary-soft;
 }
 
@@ -709,9 +778,9 @@ function findFolderTrail(
   animation: library-spin 0.9s linear infinite;
 }
 
+
+
 @keyframes library-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 </style>

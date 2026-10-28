@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import {
   Cloud,
+  CalendarDays,
+  Folder,
+  ChevronRight,
   Database,
   History,
   Link,
@@ -12,10 +15,16 @@ import {
 
 import BottomNav from '@/components/BottomNav.vue'
 import { runtimeConfig } from '@/config/runtime'
+import { getNextCourseUnlockAt } from '@/features/daily-unlock/dailyUnlockPolicy'
+import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 import { useAppStore } from '@/stores/appStore'
 
 const appVersion = __PIANKE_APP_VERSION__
 const store = useAppStore()
+const expandedSection = ref('')
+function toggleSection(section: string): void {
+  expandedSection.value = expandedSection.value === section ? '' : section
+}
 
 const connectionStatus = computed(() =>
   store.authSession ? '已连接' : '未连接'
@@ -30,6 +39,32 @@ const cacheText = computed(() =>
     ? '尚未同步'
     : formatDateTime(store.baiduCacheSavedAt)
 )
+
+const dailyUnlockCourses = computed(() => store.dailyUnlockSettings.courses)
+const dailyUnlockSummary = computed(() => {
+  if (!dailyUnlockCourses.value.length) return '0 门课程'
+  return `${dailyUnlockCourses.value.length} 门课程`
+})
+const nextDailyUnlockText = computed(() => {
+  const timestamps = dailyUnlockCourses.value
+    .map((course) => getNextCourseUnlockAt(course, store.dailyUnlockNow))
+    .filter((value): value is number => typeof value === 'number')
+  if (!timestamps.length) return '创建课程后按本机自然日解锁'
+  return `下次解锁 ${formatDateTime(Math.min(...timestamps))}`
+})
+
+useDailyUnlockClock((now) => store.refreshDailyUnlockClock(now))
+
+function toggleDailyUnlock(): void {
+  const succeeded = store.setDailyUnlockEnabled(!store.dailyUnlockSettings.enabled)
+  if (!succeeded) {
+    uni.showToast({ title: '每日解锁设置保存失败', icon: 'none' })
+  }
+}
+
+function openDailyUnlockManager(): void {
+  uni.navigateTo({ url: '/pages/daily-unlock/index' })
+}
 
 function connectBaidu(): void {
   uni.navigateTo({ url: '/pages/oauth/index' })
@@ -170,24 +205,30 @@ function formatDateTime(value: number): string {
       hour12: false
     }).format(new Date(value))
   } catch {
-    return '时间未知'
+    // App service engines without Intl still support local Date accessors.
+    const date = new Date(value)
+    if (!Number.isFinite(date.getTime())) return '时间未知'
+    const pad = (part: number): string => String(part).padStart(2, '0')
+    return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
   }
 }
 </script>
 
 <template>
-  <view class="page-shell settings-page">
+  <view class="page-shell settings-page settings-page--premium">
     <header class="settings-header">
       <text class="settings-header__title">设置</text>
-      <text class="settings-header__subtitle">来源、存储与隐私</text>
+
     </header>
 
-    <main class="settings-content">
+    <main class="settings-content settings-menu">
       <section class="settings-section" aria-labelledby="settings-baidu-title">
-        <view class="settings-section__heading">
-          <Cloud :size="21" aria-hidden="true" />
-          <text id="settings-baidu-title">百度网盘</text>
-        </view>
+        <button class="settings-menu-row" :aria-expanded="expandedSection === 'baidu'" @click="toggleSection('baidu')">
+          <Cloud :size="23" aria-hidden="true" />
+          <view class="settings-menu-row__copy"><text id="settings-baidu-title">百度网盘</text><text class="settings-menu-row__detail">{{ connectionStatus }}</text></view>
+          <ChevronRight :size="18" aria-hidden="true" />
+        </button>
+        <view v-show="expandedSection === 'baidu'" class="settings-expanded">
         <view class="settings-band">
           <view class="settings-row">
             <text class="settings-row__label">连接状态</text>
@@ -229,13 +270,59 @@ function formatDateTime(value: number): string {
           <Cloud :size="19" aria-hidden="true" />
           <text>连接百度网盘</text>
         </button>
+        </view>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settings-daily-unlock-title">
+        <button class="settings-menu-row" :aria-expanded="expandedSection === 'daily'" @click="toggleSection('daily')">
+          <CalendarDays :size="23" aria-hidden="true" />
+          <view class="settings-menu-row__copy"><text id="settings-daily-unlock-title">每日课程</text><text class="settings-menu-row__detail">课程管理与提醒</text></view>
+          <ChevronRight :size="18" aria-hidden="true" />
+        </button>
+        <view v-show="expandedSection === 'daily'" class="settings-expanded">
+        <view class="settings-band daily-unlock-band">
+          <view class="daily-unlock-row">
+            <view class="daily-unlock-copy">
+              <text class="daily-unlock-title">每日解锁课程</text>
+              <text class="daily-unlock-description">开启后，每门课程每日零点解锁下一集（按本机自然日计算）</text>
+            </view>
+            <button
+              type="button"
+              role="switch"
+              data-testid="daily-unlock-toggle"
+              class="daily-unlock-switch"
+              :class="{ 'daily-unlock-switch--on': store.dailyUnlockSettings.enabled }"
+              :aria-checked="store.dailyUnlockSettings.enabled"
+              aria-label="每日解锁课程"
+              @click="toggleDailyUnlock"
+            >
+              <view class="daily-unlock-switch__thumb" />
+            </button>
+          </view>
+          <view class="daily-unlock-status">
+            <text>{{ dailyUnlockSummary }}</text>
+            <text>{{ nextDailyUnlockText }}</text>
+          </view>
+        </view>
+        <button
+          type="button"
+          data-testid="daily-unlock-manage"
+          class="settings-action settings-action--secondary daily-unlock-manage"
+          @click="openDailyUnlockManager"
+        >
+          <History :size="18" aria-hidden="true" />
+          <text>管理课程</text>
+        </button>
+        </view>
       </section>
 
       <section class="settings-section" aria-labelledby="settings-local-title">
-        <view class="settings-section__heading">
-          <Database :size="21" aria-hidden="true" />
-          <text id="settings-local-title">本机数据</text>
-        </view>
+        <button class="settings-menu-row" :aria-expanded="expandedSection === 'local'" @click="toggleSection('local')">
+          <Folder :size="23" aria-hidden="true" />
+          <view class="settings-menu-row__copy"><text id="settings-local-title">本地数据</text><text class="settings-menu-row__detail">视频缓存与存储</text></view>
+          <ChevronRight :size="18" aria-hidden="true" />
+        </button>
+        <view v-show="expandedSection === 'local'" class="settings-expanded">
         <view class="settings-band">
           <view class="settings-row">
             <view class="settings-row__label-with-icon">
@@ -278,23 +365,32 @@ function formatDateTime(value: number): string {
             <text>清除播放历史</text>
           </button>
         </view>
+        </view>
       </section>
 
       <section class="settings-section" aria-labelledby="settings-privacy-title">
-        <view class="settings-section__heading">
-          <ShieldCheck :size="21" aria-hidden="true" />
-          <text id="settings-privacy-title">隐私</text>
-        </view>
-        <view class="settings-privacy-band">
+        <button class="settings-menu-row" :aria-expanded="expandedSection === 'privacy'" @click="toggleSection('privacy')">
+          <ShieldCheck :size="23" aria-hidden="true" />
+          <view class="settings-menu-row__copy"><text id="settings-privacy-title">隐私保护</text><text class="settings-menu-row__detail">权限与数据安全</text></view>
+          <ChevronRight :size="18" aria-hidden="true" />
+        </button>
+        <view v-show="expandedSection === 'privacy'" class="settings-privacy-band">
           <text>播放进度和媒体直链仅保存在本机。</text>
           <text>百度授权仅用于访问应用专属目录，不显示或记录访问凭证。</text>
         </view>
       </section>
 
-      <view class="settings-version" aria-label="应用版本">
-        <text>片刻</text>
-        <text>版本 {{ appVersion }}</text>
-      </view>
+      <button class="settings-menu-row settings-menu-row--short" aria-label="清除百度目录缓存" @click="requestClearCache">
+        <Trash2 :size="23" aria-hidden="true" />
+        <view class="settings-menu-row__copy"><text>清除缓存</text></view>
+        <text class="settings-menu-row__detail">{{ store.baiduVideos.length }} 个视频</text>
+      </button>
+      <button class="settings-menu-row settings-menu-row--short" :aria-expanded="expandedSection === 'about'" @click="toggleSection('about')">
+        <text class="settings-info-icon" aria-hidden="true">i</text>
+        <view class="settings-menu-row__copy"><text>关于片刻</text></view>
+        <ChevronRight :size="18" aria-hidden="true" />
+      </button>
+      <view v-show="expandedSection === 'about'" class="settings-version" aria-label="应用版本"><text>片刻</text><text>版本 {{ appVersion }}</text></view>
     </main>
 
     <BottomNav active="settings" />
@@ -313,8 +409,9 @@ function formatDateTime(value: number): string {
   min-height: 92rpx;
   flex-direction: column;
   justify-content: center;
-  gap: 4rpx;
 }
+
+.settings-header > * + * { margin-top: 4rpx; }
 
 .settings-header__title {
   font-size: 36rpx;
@@ -331,32 +428,38 @@ function formatDateTime(value: number): string {
 .settings-content {
   display: flex;
   flex-direction: column;
-  gap: 30rpx;
   margin-top: 20rpx;
 }
+
+.settings-content > * + * { margin-top: 0; }
 
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
 }
+
+.settings-section > * + * { margin-top: 0; }
 
 .settings-section__heading,
 .settings-row,
 .settings-row__label-with-icon,
 .settings-action,
-.settings-action-row,
 .settings-version {
   display: flex;
   align-items: center;
 }
 
+.settings-action-row {
+  display: grid;
+}
+
 .settings-section__heading {
-  gap: 10rpx;
   color: $color-text;
   font-size: 27rpx;
   font-weight: 720;
 }
+
+.settings-section__heading .app-icon { margin-right: 10rpx; }
 
 .settings-band {
   border-top: 1px solid $color-border;
@@ -364,10 +467,97 @@ function formatDateTime(value: number): string {
   background: rgba($color-surface, 0.64);
 }
 
+.daily-unlock-band {
+  padding: 18rpx;
+}
+
+.daily-unlock-row,
+.daily-unlock-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.daily-unlock-switch { margin-left: 18rpx; }
+
+.daily-unlock-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.daily-unlock-copy > * + * { margin-top: 6rpx; }
+
+.daily-unlock-title {
+  color: $color-text;
+  font-size: 24rpx;
+  font-weight: 700;
+}
+
+.daily-unlock-description,
+.daily-unlock-status {
+  color: $color-muted;
+  font-size: 21rpx;
+  line-height: 1.45;
+}
+
+.daily-unlock-status {
+  align-items: flex-start;
+  flex-direction: column;
+  margin-top: 16rpx;
+  padding-top: 14rpx;
+  border-top: 1px solid $color-border;
+}
+
+.daily-unlock-status > * + * { margin-top: 4rpx; }
+
+.daily-unlock-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 92rpx;
+  height: 52rpx;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #c9cfca;
+  transition: background-color 160ms ease;
+}
+
+.daily-unlock-switch--on {
+  background: $color-primary;
+}
+
+.daily-unlock-switch__thumb {
+  position: absolute;
+  top: 6rpx;
+  left: 6rpx;
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2rpx 8rpx rgba(26, 41, 34, 0.2);
+  transition: transform 160ms ease;
+}
+
+.daily-unlock-switch--on .daily-unlock-switch__thumb {
+  transform: translateX(40rpx);
+}
+
+.daily-unlock-manage {
+  width: 100%;
+  margin: 0;
+}
+
+.daily-unlock-switch:focus-visible,
+.daily-unlock-manage:focus-visible {
+  outline: 2px solid $color-primary;
+  outline-offset: 3px;
+}
+
 .settings-row {
   box-sizing: border-box;
   justify-content: space-between;
-  gap: 24rpx;
   min-height: 78rpx;
   padding: 14rpx 18rpx;
 }
@@ -384,12 +574,11 @@ function formatDateTime(value: number): string {
   line-height: 1.4;
 }
 
-.settings-row__label-with-icon {
-  gap: 10rpx;
-}
+.settings-row__label-with-icon .app-icon { margin-right: 10rpx; }
 
 .settings-row__value {
   max-width: 62%;
+  margin-left: 24rpx;
   overflow-wrap: anywhere;
   color: $color-text;
   font-size: 23rpx;
@@ -403,18 +592,18 @@ function formatDateTime(value: number): string {
 }
 
 .settings-action-row {
-  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12rpx;
+  margin: -6rpx;
 }
 
 .settings-action {
   box-sizing: border-box;
-  gap: 9rpx;
+  display: flex;
+  align-items: center;
   justify-content: center;
   min-width: 0;
   min-height: 74rpx;
-  margin: 0;
+  margin: 6rpx;
   padding: 12rpx 18rpx;
   border: 1px solid $color-border;
   border-radius: $radius-control;
@@ -422,6 +611,8 @@ function formatDateTime(value: number): string {
   font-weight: 700;
   line-height: 1.3;
 }
+
+.settings-action .app-icon { margin-right: 8rpx; }
 
 .settings-action--primary {
   border-color: $color-primary;
@@ -443,7 +634,6 @@ function formatDateTime(value: number): string {
 .settings-privacy-band {
   display: flex;
   flex-direction: column;
-  gap: 10rpx;
   padding: 20rpx 18rpx;
   border-top: 1px solid $color-border;
   border-bottom: 1px solid $color-border;
@@ -452,6 +642,8 @@ function formatDateTime(value: number): string {
   line-height: 1.55;
   background: rgba($color-surface, 0.5);
 }
+
+.settings-privacy-band > * + * { margin-top: 10rpx; }
 
 .settings-version {
   justify-content: space-between;
@@ -466,14 +658,22 @@ function formatDateTime(value: number): string {
   }
 
   .settings-row {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 6rpx;
+    align-items: center;
+    flex-direction: row;
   }
 
   .settings-row__value {
-    max-width: 100%;
-    text-align: left;
+    max-width: 62%;
+    text-align: right;
   }
 }
+
+.settings-content { margin-top: 12rpx; }
+.settings-header { min-height: 78rpx; }
+.settings-menu-row { display: flex; align-items: center; width: 100%; min-height: 132rpx; margin: 0; padding: 24rpx 0; border: 0; border-bottom: 1px solid rgba($color-border, .65); border-radius: 0; color: $color-text; text-align: left; background: transparent; line-height: 1.35; }
+.settings-menu-row__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; margin: 0 28rpx; font-size: 27rpx; font-weight: 600; }
+.settings-menu-row__detail { margin-top: 5rpx; color: $color-muted; font-size: 22rpx; font-weight: 400; }
+.settings-menu-row--short { min-height: 98rpx; border-bottom: 0; padding: 20rpx 0; }
+.settings-expanded { padding: 8rpx 0 24rpx; }
+.settings-info-icon { display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border: 2px solid currentColor; border-radius: 50%; font-size: 15px; font-family: serif; line-height: 1; }
 </style>

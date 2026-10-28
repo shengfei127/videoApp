@@ -26,6 +26,13 @@ try {
       path: `src/static/icons/${name}.png`, omitBackground: true
     })
   }
+  for (const name of ['ArrowLeft', 'Play', 'Pause', 'Maximize']) {
+    const svg = await renderToString(h(icons[name], {
+      size: 72, color: '#ffffff', strokeWidth: 1.8
+    }))
+    await page.setContent('<style>body{margin:0;background:transparent}</style>' + svg)
+    await page.screenshot({ path: `src/static/icons/${name}White.png`, omitBackground: true })
+  }
   console.log(`Rendered ${names.length} icons`)
 } finally {
   await browser.close()

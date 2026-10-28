@@ -8,13 +8,23 @@ import type { VideoItem } from '@/domain/video'
 import LibraryPage from '@/pages/library/index.vue'
 import { useAppStore } from '@/stores/appStore'
 
-const lifecycle = vi.hoisted(() => ({ onLoad: vi.fn() }))
+const lifecycle = vi.hoisted(() => ({ onLoad: vi.fn(), onShow: vi.fn(), onHide: vi.fn(), onUnload: vi.fn() }))
 
-vi.mock('@dcloudio/uni-app', () => ({ onLoad: lifecycle.onLoad }))
+vi.mock('@dcloudio/uni-app', () => ({ onLoad: lifecycle.onLoad, onShow: lifecycle.onShow, onHide: lifecycle.onHide, onUnload: lifecycle.onUnload }))
 
 describe('Library page', () => {
+  it('uses the premium branded library shell', () => {
+    const { wrapper } = mountLibrary()
+    expect(wrapper.get('.library-page').classes()).toContain('library-page--premium')
+    expect(wrapper.get('.library-header').classes()).toContain('library-header--premium')
+  })
+
+
   beforeEach(() => {
     lifecycle.onLoad.mockReset()
+    lifecycle.onShow.mockReset()
+    lifecycle.onHide.mockReset()
+    lifecycle.onUnload.mockReset()
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn(() => 'library-direct-id')
     })
@@ -22,6 +32,16 @@ describe('Library page', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('shows the recent video grid followed by the folder collection', () => {
+    const { wrapper } = mountLibrary((store) => {
+      store.baiduVideos = nestedVideos()
+    })
+
+    expect(wrapper.find('.library-video-grid').exists()).toBe(true)
+    expect(wrapper.get('.library-folder-section').text()).toContain('文件夹')
+    expect(wrapper.get('.library-folder-section').findAll('[data-testid="folder-row"]').length).toBeGreaterThan(0)
   })
 
   it('switches a fixed two-option segment between recent videos and folders', async () => {
@@ -32,8 +52,8 @@ describe('Library page', () => {
 
     expect(segments).toHaveLength(2)
     expect(segments.map((button) => button.text())).toEqual([
-      '最近视频',
-      '按文件夹'
+      '最近',
+      '文件夹'
     ])
     expect(segments[0]?.attributes('aria-pressed')).toBe('true')
     expect(wrapper.findAllComponents(VideoRow)).toHaveLength(2)
@@ -331,6 +351,37 @@ describe('Library page', () => {
     handleLoad({ openImport: '1' })
     await wrapper.vm.$nextTick()
     expect(sheet.props('open')).toBe(true)
+  })
+
+  it('keeps every catalog video visible and blocks a locked episode before navigation', async () => {
+    const first = video('1', '第1集.mp4', '/apps/片刻/课程/第1集.mp4', 200)
+    const second = video('2', '第2集.mp4', '/apps/片刻/课程/第2集.mp4', 100)
+    const createdAt = new Date(2026, 9, 27, 10).getTime()
+    const { store, wrapper } = mountLibrary((appStore) => {
+      appStore.baiduVideos = [first, second]
+      appStore.dailyUnlockNow = createdAt
+      appStore.dailyUnlockSettings = {
+        enabled: true,
+        courses: [{
+          id: 'course-1', name: '课程', createdAt,
+          episodes: [
+            { videoId: first.id, name: first.name, sourceType: 'baidu', path: first.path },
+            { videoId: second.id, name: second.name, sourceType: 'baidu', path: second.path }
+          ]
+        }]
+      }
+    })
+
+    expect(wrapper.findAllComponents(VideoRow)).toHaveLength(2)
+    const lockedRow = wrapper.findAllComponents(VideoRow).find((row) => row.props('video').id === second.id)!
+    expect(lockedRow.text()).toContain('第2集待解锁')
+    await lockedRow.get('button.video-row').trigger('click')
+
+    expect(uni.navigateTo).not.toHaveBeenCalled()
+    expect(uni.showToast).toHaveBeenCalledWith({
+      title: '第2集将于 2026-10-28 00:00 解锁', icon: 'none'
+    })
+    expect(store.videoUnlockStatus(second.id).locked).toBe(true)
   })
 
   it('routes a selected video with an encoded ID', async () => {

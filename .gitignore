@@ -12,3 +12,20 @@ output/playwright/
 .env.*
 !.env.example
 *.local
+
+# Local IDE configuration and launch state
+/.idea/
+/.hbuilderx/
+
+# Browser debugging and generated review artifacts
+/.playwright-mcp/
+/.playwright-*.local.config.ts
+/output/design-validation/
+/output/*-review.png
+/pianke-*.png
+/settings-baseline.png
+
+# Local operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

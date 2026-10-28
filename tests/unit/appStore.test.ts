@@ -17,6 +17,7 @@ import {
   DIRECT_VIDEO_STORAGE_KEY,
   DirectLinkService
 } from '@/features/direct-links/directLinkService'
+import { DailyUnlockRepository } from '@/features/daily-unlock/dailyUnlockRepository'
 import {
   PROGRESS_STORAGE_KEY,
   ProgressRepository
@@ -648,7 +649,130 @@ describe('app store sync state transitions', () => {
   })
 })
 
+describe('app store daily unlock settings', () => {
+  it('restores courses after restart and keeps them through cache and history clearing', async () => {
+    const context = createTestContext('daily-unlock-restart')
+    await context.store.initialize()
+    expect(context.store.createDailyUnlockCourse({
+      name: '保留课程',
+      episodes: [
+        { videoId: 'baidu:1', name: '第1集.mp4', sourceType: 'baidu', path: '/apps/片刻/第1集.mp4' },
+        { videoId: 'baidu:2', name: '第2集.mp4', sourceType: 'baidu', path: '/apps/片刻/第2集.mp4' }
+      ]
+    }).ok).toBe(true)
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(true)
+    const expected = JSON.parse(JSON.stringify(context.store.dailyUnlockSettings))
+    const restored = createTestContext('daily-unlock-restored', {
+      dailyUnlockRepository: new DailyUnlockRepository(context.storage)
+    })
+    await restored.store.initialize()
+    expect(restored.store.dailyUnlockSettings).toEqual(expected)
+    expect(restored.store.videoUnlockStatus('baidu:2').locked).toBe(true)
+    expect(restored.store.clearCatalogCache()).toBe(true)
+    expect(restored.store.clearProgress()).toBe(true)
+    expect(restored.store.dailyUnlockSettings).toEqual(expected)
+    expect(context.storage.read('pianke:daily-unlock:v1', null)).toEqual(expected)
+  })
+
+  it('stores direct course episodes without copying signed media URLs', async () => {
+    const context = createTestContext('daily-unlock-direct-snapshot')
+    await context.store.initialize()
+
+    const result = context.store.createDailyUnlockCourse({
+      name: '短期课程',
+      episodes: [
+        {
+          videoId: 'direct:lesson-1',
+          name: '第1课.m3u8',
+          sourceType: 'direct',
+          path: 'https://media.example/lesson.m3u8?sign=private-value'
+        }
+      ]
+    })
+
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(context.storage.read('pianke:daily-unlock:v1', null)))
+      .not.toContain('private-value')
+    expect(context.store.dailyUnlockSettings.courses[0]?.episodes[0]).toEqual({
+      videoId: 'direct:lesson-1',
+      name: '第1课.m3u8',
+      sourceType: 'direct'
+    })
+  })
+
+  it('persists the switch and course, detects conflicts, and releases locks after deletion', async () => {
+    const context = createTestContext('daily-unlock-course-state')
+    await context.store.initialize()
+
+    expect(context.store.dailyUnlockSettings).toEqual({ enabled: false, courses: [] })
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(true)
+    const first = context.store.createDailyUnlockCourse({
+      name: '第1季',
+      episodes: [
+        { videoId: 'baidu:lesson-1', name: '第1集.mp4', sourceType: 'baidu', path: '/apps/片刻/第1集.mp4' },
+        { videoId: 'baidu:lesson-2', name: '第2集.mp4', sourceType: 'baidu', path: '/apps/片刻/第2集.mp4' }
+      ]
+    })
+
+    expect(first.ok).toBe(true)
+    expect(context.store.dailyUnlockSettings.enabled).toBe(true)
+    expect(context.store.videoUnlockStatus('baidu:lesson-1').locked).toBe(false)
+    expect(context.store.videoUnlockStatus('baidu:lesson-2')).toMatchObject({
+      locked: true,
+      episodeNumber: 2,
+      courseName: '第1季'
+    })
+    expect(context.store.createDailyUnlockCourse({
+      name: '重复课程',
+      episodes: [{ videoId: 'baidu:lesson-2', name: '重复.mp4', sourceType: 'baidu', path: '/apps/片刻/重复.mp4' }]
+    })).toEqual({ ok: false, reason: 'conflict' })
+
+    expect(context.store.setDailyUnlockEnabled(false)).toBe(true)
+    expect(context.store.dailyUnlockSettings.courses).toHaveLength(1)
+    expect(context.store.videoUnlockStatus('baidu:lesson-2').locked).toBe(false)
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(true)
+    const courseId = context.store.dailyUnlockSettings.courses[0]!.id
+    expect(context.store.deleteDailyUnlockCourse(courseId)).toBe(true)
+    expect(context.store.dailyUnlockSettings.courses).toEqual([])
+    expect(context.store.videoUnlockStatus('baidu:lesson-2')).toEqual({ locked: false })
+    expect(context.storage.read('pianke:daily-unlock:v1', null)).toEqual({
+      enabled: true,
+      courses: []
+    })
+  })
+
+  it('keeps the confirmed state when local daily-unlock persistence fails', async () => {
+    const save = vi.fn(() => { throw new Error('sentinel-storage-error') })
+    const context = createTestContext('daily-unlock-persistence-failure', {
+      dailyUnlockRepository: {
+        load: () => ({ enabled: false, courses: [] }),
+        save
+      }
+    })
+    await context.store.initialize()
+
+    expect(context.store.setDailyUnlockEnabled(true)).toBe(false)
+    expect(context.store.dailyUnlockSettings).toEqual({ enabled: false, courses: [] })
+    expect(context.store.createDailyUnlockCourse({
+      name: '保存失败',
+      episodes: [{ videoId: 'direct:one', name: '第一课.mp4', sourceType: 'direct' }]
+    })).toEqual({ ok: false, reason: 'storage' })
+    expect(context.store.dailyUnlockSettings.courses).toEqual([])
+    expect(save).toHaveBeenCalledTimes(2)
+  })
+})
 describe('app store derived catalog', () => {
+  it('deduplicates watched videos using the most recent history entry', () => {
+    const { store } = createTestContext('recent-history-deduplication')
+    store.baiduVideos = [baiduVideo('1', NOW), baiduVideo('2', NOW)]
+    store.progressHistory = [
+      { videoId: 'baidu:1', positionSeconds: 10, durationSeconds: 600, updatedAt: NOW - 20, completed: false },
+      { videoId: 'baidu:2', positionSeconds: 20, durationSeconds: 600, updatedAt: NOW - 10, completed: false },
+      { videoId: 'baidu:1', positionSeconds: 30, durationSeconds: 600, updatedAt: NOW, completed: false }
+    ]
+    expect(store.recentVideos.map(({ id }) => id)).toEqual(['baidu:1', 'baidu:2'])
+  })
+
   it('reuses a pre-normalized search index when only the query changes', () => {
     const context = createTestContext('getters-search-index')
     const videos = [
@@ -739,26 +863,28 @@ describe('app store derived catalog', () => {
     expect(direct).toEqual(originalDirect)
   })
 
-  it('sorts all sources newest first with deterministic Chinese numeric ties', async () => {
-    const context = createTestContext('getters-recent')
-    const directRecords: DirectVideoRecord[] = [
-      directRecord('old', '旧视频.mp4', NOW - 200),
-      directRecord('ten', '第10集.mp4', NOW),
-      directRecord('two', '第2集.mp4', NOW)
-    ]
-    context.storage.write(DIRECT_VIDEO_STORAGE_KEY, directRecords)
-    context.cache.saveSuccessful([baiduVideo('1', NOW - 100)])
+  it('shows only watched catalog videos in recentVideos while preserving the complete catalog list', async () => {
+    const context = createTestContext('getters-recent-history')
+    context.storage.write(DIRECT_VIDEO_STORAGE_KEY, [
+      directRecord('watched', '看过的直播.mp4', NOW - 300)
+    ])
+    context.cache.saveSuccessful([
+      { ...baiduVideo('10', NOW), name: '未看过.mp4' },
+      { ...baiduVideo('11', NOW - 100), name: '看过的旧视频.mp4' }
+    ])
+    context.progressRepository.save('baidu:11', 10, 600, NOW - 50)
+    context.progressRepository.save('direct:watched', 600, 600, NOW - 10)
+    context.progressRepository.save('baidu:99', 120, 600, NOW)
 
     await context.store.initialize()
 
     expect(context.store.recentVideos.map((video) => video.id)).toEqual([
-      'direct:two',
-      'direct:ten',
-      'baidu:1',
-      'direct:old'
+      'direct:watched', 'baidu:11'
+    ])
+    expect(context.store.catalogRecentVideos.map((video) => video.id)).toEqual([
+      'baidu:10', 'baidu:11', 'direct:watched'
     ])
   })
-
   it('joins only resumable progress to existing videos and sorts by progress time', async () => {
     const context = createTestContext('getters-continue')
     context.storage.write(DIRECT_VIDEO_STORAGE_KEY, [
@@ -831,7 +957,7 @@ describe('app store derived catalog', () => {
 
     context.store.searchQuery = '   '
     expect(context.store.searchResults.map((video) => video.id)).toEqual(
-      context.store.recentVideos.map((video) => video.id)
+      context.store.catalogRecentVideos.map((video) => video.id)
     )
     expect(context.listPage).not.toHaveBeenCalled()
   })
@@ -1357,6 +1483,7 @@ function createMockIsolationContext(
   const authRepository = new AuthRepository(storage)
   const directLinkService = new DirectLinkService(storage)
   const progressRepository = new ProgressRepository(storage)
+  const dailyUnlockRepository = new DailyUnlockRepository(storage)
   const catalogCache = new CatalogCache(storage, {
     root: CONFIG.baiduRoot,
     now: () => NOW
@@ -1373,6 +1500,7 @@ function createMockIsolationContext(
   const listPage = vi.fn().mockResolvedValue([])
   const bootstrap = vi.fn(bootstrapper)
   const useStore = createAppStore(`test:${storeId}`, {
+    dailyUnlockRepository,
     authRepository,
     directLinkService,
     progressRepository,
@@ -1411,12 +1539,14 @@ function createTestContext(
   const authRepository = new AuthRepository(storage)
   const directLinkService = new DirectLinkService(storage, { now })
   const progressRepository = new ProgressRepository(storage)
+  const dailyUnlockRepository = new DailyUnlockRepository(storage)
   const cache = new CatalogCache(storage, {
     root: CONFIG.baiduRoot,
     now
   })
   const listPage = vi.fn().mockResolvedValue([])
   const dependencies: AppStoreDependencies = {
+    dailyUnlockRepository,
     authRepository,
     directLinkService,
     progressRepository,
@@ -1465,6 +1595,7 @@ function createFailingRemovalContext(
   const authRepository = new AuthRepository(storage)
   const directLinkService = new DirectLinkService(storage, { now: () => NOW })
   const progressRepository = new ProgressRepository(storage)
+  const dailyUnlockRepository = new DailyUnlockRepository(storage)
   const cache = new CatalogCache(storage, {
     root: CONFIG.baiduRoot,
     now: () => NOW
@@ -1478,6 +1609,7 @@ function createFailingRemovalContext(
   cache.saveSuccessful([baiduVideo('1', NOW)])
   failRemoval = true
   const useStore = createAppStore(`test:${storeId}`, {
+    dailyUnlockRepository,
     authRepository,
     directLinkService,
     progressRepository,

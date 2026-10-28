@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { VideoItem } from '@/domain/video'
 import { BaiduError } from '@/features/baidu/baiduErrors'
@@ -9,6 +9,7 @@ import { useAppStore } from '@/stores/appStore'
 
 const lifecycle = vi.hoisted(() => ({
   onLoad: vi.fn(),
+  onShow: vi.fn(),
   onHide: vi.fn(),
   onUnload: vi.fn()
 }))
@@ -38,6 +39,7 @@ const pageMocks = vi.hoisted(() => ({
 
 vi.mock('@dcloudio/uni-app', () => ({
   onLoad: lifecycle.onLoad,
+  onShow: lifecycle.onShow,
   onHide: lifecycle.onHide,
   onUnload: lifecycle.onUnload
 }))
@@ -56,8 +58,19 @@ vi.mock('@/features/baidu/baiduDriveSource', () => ({
 }))
 
 describe('Player page', () => {
+  it('uses the immersive player shell', () => {
+    const { wrapper } = mountPlayer()
+    expect(wrapper.get('.player-page').classes()).toContain('player-page--immersive')
+  })
+
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   beforeEach(() => {
     lifecycle.onLoad.mockReset()
+    lifecycle.onShow.mockReset()
     lifecycle.onHide.mockReset()
     lifecycle.onUnload.mockReset()
     pageMocks.platform = 'app'
@@ -70,6 +83,41 @@ describe('Player page', () => {
     })
   })
 
+  it('starts playback before metadata and clamps custom seek commands after metadata', async () => {
+    pageMocks.platform = 'h5'
+    const video = directVideo('https://media.example.test/movie.mp4')
+    const { wrapper } = mountPlayer((store) => {
+      store.directRecords = [{ id: video.sourceId, name: video.name, url: video.path, mediaKind: 'mp4', addedAt: 1 }]
+    })
+    await loadPlayer(video.id)
+    await flushPromises()
+    await wrapper.get('[data-testid="player-toggle-playback"]').trigger('click')
+    expect(pageMocks.videoContext.play).toHaveBeenCalledOnce()
+    const media = wrapper.get('[data-testid="player-video"]')
+    await media.trigger('loadedmetadata', {detail:{duration: 600}})
+    await media.trigger('play')
+    await wrapper.get('[data-testid="player-toggle-playback"]').trigger('click')
+    expect(pageMocks.videoContext.pause).toHaveBeenCalled()
+    await wrapper.get('[data-testid="player-seek-rail"]').trigger('change', {detail:{value:800}})
+    expect(pageMocks.videoContext.seek).toHaveBeenLastCalledWith(600)
+    await wrapper.get('[aria-label="后退 15 秒"]').trigger('click')
+    expect(pageMocks.videoContext.seek).toHaveBeenLastCalledWith(585)
+    await wrapper.get('[aria-label="全屏播放"]').trigger('click')
+    expect(pageMocks.videoContext.requestFullScreen).toHaveBeenCalledWith({direction:90})
+  })
+
+  it('uses native cover controls and cycles playback speed on Android', async () => {
+    const video = directVideo('https://media.example.test/movie.mp4')
+    const { wrapper } = mountPlayer((store) => {
+      store.directRecords = [{ id: video.sourceId, name: video.name, url: video.path, mediaKind: 'mp4', addedAt: 1 }]
+    })
+    await loadPlayer(video.id)
+    await flushPromises()
+    expect(wrapper.find('cover-image[data-testid="player-toggle-playback"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="player-rate-menu"]').trigger('click')
+    expect(pageMocks.videoContext.playbackRate).toHaveBeenLastCalledWith(1.25)
+  })
+
   it('uses the configured Baidu app root for the player drive source', () => {
     mountPlayer()
 
@@ -78,7 +126,21 @@ describe('Player page', () => {
     )
   })
 
-  it('loads a direct source without rendering its private URL, uses native player controls, and saves lifecycle progress', async () => {
+  it('places a custom seek rail and transport controls over the immersive video stage', async () => {
+    const video = directVideo('https://media.example.test/movie.mp4')
+    const { wrapper } = mountPlayer((store) => {
+      store.directRecords = [{ id: video.sourceId, name: video.name, url: video.path, mediaKind: 'mp4', addedAt: 1 }]
+    })
+
+    await loadPlayer(video.id)
+    await flushPromises()
+
+    expect(wrapper.get('.player-stage').find('[data-testid="player-seek-rail"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="player-toggle-playback"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="player-rate-menu"]').text()).toContain('1.0x')
+  })
+
+  it('loads a direct source behind custom immersive controls and saves lifecycle progress', async () => {
     const privateUrl =
       'https://media.example.test/movie.mp4?access_token=do-not-render&signature=private'
     const video = directVideo(privateUrl)
@@ -98,11 +160,9 @@ describe('Player page', () => {
     await flushPromises()
 
     const player = wrapper.get('[data-testid="player-video"]')
-    expect(player.attributes('controls')).toBeDefined()
+    expect(player.attributes('controls')).not.toBe('true')
     expect(player.attributes('enable-play-gesture')).toBeDefined()
-    expect(player.attributes('show-center-play-btn')).toBeDefined()
-    expect(player.attributes('show-fullscreen-btn')).toBeDefined()
-    expect(player.attributes('enable-fullscreen')).toBeUndefined()
+    expect(wrapper.find('[data-testid="player-toggle-playback"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('媒体直链')
     expect(wrapper.text()).not.toContain(privateUrl)
     expect(wrapper.text()).not.toContain('access_token')
@@ -297,6 +357,50 @@ describe('Player page', () => {
     )
   })
 
+  it('blocks a locked deep link before creating or resolving a player load, then rechecks on unlock', async () => {
+    vi.useFakeTimers()
+    const video = baiduVideo()
+    pageMocks.resolvePlaybackUrl.mockResolvedValue('https://d.pcs.baidu.com/allowed.m3u8')
+    const createdAt = Date.now()
+    const nextMidnight = new Date(createdAt)
+    nextMidnight.setDate(nextMidnight.getDate() + 1)
+    nextMidnight.setHours(0, 0, 0, 0)
+    const { store, wrapper } = mountPlayer((appStore) => {
+      appStore.baiduVideos = [video]
+      appStore.authSession = { ...validSession(), expiresAt: createdAt + 2 * 24 * 60 * 60 * 1000 }
+      appStore.dailyUnlockNow = createdAt
+      appStore.dailyUnlockSettings = {
+        enabled: true,
+        courses: [{
+          id: 'locked-course',
+          name: '听力课',
+          createdAt,
+          episodes: [
+            { videoId: 'direct:previous', name: '第1集.m3u8', sourceType: 'direct' },
+            { videoId: video.id, name: video.name, sourceType: 'baidu', path: video.path }
+          ]
+        }]
+      }
+    })
+
+    await loadPlayer(video.id)
+    await flushPromises()
+
+    expect(pageMocks.resolvePlaybackUrl).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="player-locked"]').text()).toContain('听力课')
+    expect(wrapper.get('[data-testid="player-locked"]').text()).toContain('第2集')
+    expect(wrapper.get('[data-testid="player-locked"]').text()).toContain('00:00 解锁')
+    expect(wrapper.text()).not.toContain('never-render')
+
+    vi.setSystemTime(nextMidnight)
+    store.refreshDailyUnlockClock()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="player-unlocked"]').text()).toContain('已解锁')
+    await wrapper.get('[data-testid="player-start-unlocked"]').trigger('click')
+    await flushPromises()
+    expect(pageMocks.resolvePlaybackUrl).toHaveBeenCalledOnce()
+  })
+
   it('does not retry a direct link after a 403 playback error', async () => {
     const video = directVideo('https://media.example.test/movie.mp4')
     const { wrapper } = mountPlayer((appStore) => {
@@ -478,7 +582,8 @@ describe('Player page', () => {
     expect(wrapper.text()).not.toContain('direct-signature')
   })
 
-  it('sets one of the fixed playback rates with the native video context', async () => {
+  it('sets one of the fixed playback rates with the video context', async () => {
+    pageMocks.platform = 'h5'
     const video = directVideo('https://media.example.test/movie.mp4')
     const { wrapper } = mountPlayer((appStore) => {
       appStore.directRecords = [
@@ -497,6 +602,7 @@ describe('Player page', () => {
       detail: { duration: 600 }
     })
 
+    await wrapper.get('[data-testid="player-rate-menu"]').trigger('click')
     expect(wrapper.findAll('[data-testid="player-rate"]')).toHaveLength(5)
     await wrapper.findAll('[data-testid="player-rate"]')[3]!.trigger('click')
     expect(pageMocks.videoContext.playbackRate).toHaveBeenCalledWith(1.5)

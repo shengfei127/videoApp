@@ -9,7 +9,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsPage from '@/pages/settings/index.vue'
 import { useAppStore } from '@/stores/appStore'
 
+vi.mock('@dcloudio/uni-app', () => ({ onShow: vi.fn(), onHide: vi.fn(), onUnload: vi.fn() }))
+
 describe('Settings page', () => {
+  it('uses the premium settings shell', () => {
+    const { wrapper } = mountSettings()
+    expect(wrapper.get('.settings-page').classes()).toContain('settings-page--premium')
+  })
+
+
+  it('presents settings as a compact icon-led list matching the design', () => {
+    const { wrapper } = mountSettings(seedAllSlices)
+    expect(wrapper.find('.settings-menu').exists()).toBe(true)
+    expect(wrapper.findAll('.settings-menu-row').length).toBeGreaterThanOrEqual(6)
+  })
+
   beforeEach(() => {
     vi.mocked(uni.showModal).mockReset()
     vi.mocked(uni.showToast).mockReset()
@@ -25,6 +39,26 @@ describe('Settings page', () => {
     expect(source).toContain('__PIANKE_APP_VERSION__')
     expect(source).not.toMatch(/APP_VERSION\s*=\s*['"]\d/u)
     expect(wrapper.text()).toContain('版本 ' + packageMetadata.version)
+  })
+
+  it('shows the off-by-default daily course switch and opens course management', async () => {
+    const { store, wrapper } = mountSettings()
+    const toggle = wrapper.get('[data-testid="daily-unlock-toggle"]')
+    const manage = wrapper.get('[data-testid="daily-unlock-manage"]')
+
+    expect(toggle.attributes('role')).toBe('switch')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(wrapper.text()).toContain('每日零点解锁下一集')
+    expect(wrapper.text()).toContain('0 门课程')
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(store.dailyUnlockSettings.enabled).toBe(true)
+
+    await manage.trigger('click')
+    expect(uni.navigateTo).toHaveBeenCalledWith({
+      url: '/pages/daily-unlock/index'
+    })
   })
 
   it('shows source metadata and privacy state without rendering credentials or URLs', () => {
@@ -71,6 +105,19 @@ describe('Settings page', () => {
       'dlink=signed'
     ]) {
       expect(wrapper.html()).not.toContain(secret)
+    }
+  })
+
+  it('shows local timestamps when Android does not provide Intl', () => {
+    vi.stubGlobal('Intl', undefined)
+    try {
+      const { wrapper } = mountSettings((store) => {
+        store.baiduCacheSavedAt = new Date(2026, 9, 27, 9, 5).getTime()
+      })
+      expect(wrapper.text()).toContain('2026/10/27 09:05')
+      wrapper.unmount()
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 

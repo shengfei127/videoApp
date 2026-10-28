@@ -19,6 +19,12 @@
       }
     },
     {
+      "path": "pages/daily-unlock/index",
+      "style": {
+        "navigationStyle": "custom"
+      }
+    },
+    {
       "path": "pages/settings/index",
       "style": {
         "navigationStyle": "custom"
@@ -32,7 +38,7 @@
     }
   ],
   "globalStyle": {
-    "backgroundColor": "#f4f5f2",
+    "backgroundColor": "#f8f5ed",
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "片刻"
   }

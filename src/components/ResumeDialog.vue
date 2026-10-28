@@ -111,69 +111,70 @@ function formatDuration(totalSeconds: number): string {
 
 .resume-dialog {
   position: fixed;
-  z-index: 10;
+  z-index: 90;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   padding: 32rpx;
-  background: rgba(13, 16, 14, 0.48);
+  background: rgba(7, 27, 23, 0.66);
 }
 
 .resume-dialog__panel {
   box-sizing: border-box;
   display: flex;
-  width: min(100%, 560rpx);
-  min-height: 290rpx;
+  width: min(100%, 620rpx);
+  min-height: 300rpx;
   flex-direction: column;
-  gap: 16rpx;
   justify-content: center;
-  padding: 34rpx;
-  border: 1px solid $color-border;
-  border-radius: $radius-card;
+  padding: 42rpx 34rpx;
+  border: 1px solid rgba($color-border, 0.9);
+  border-radius: 22px;
   background: $color-surface;
   box-shadow: $shadow-panel;
 }
 
 .resume-dialog__heading {
   color: $color-text;
-  font-size: 30rpx;
-  font-weight: 740;
+  font-size: 32rpx;
+  font-weight: 680;
   line-height: 1.35;
 }
 
 .resume-dialog__detail {
+  margin-top: 12rpx;
   color: $color-muted;
-  font-size: 24rpx;
+  font-size: 23rpx;
   line-height: 1.5;
 }
 
 .resume-dialog__actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14rpx;
-  margin-top: 8rpx;
+  margin-top: 30rpx;
 }
 
 .resume-dialog__action {
   display: flex;
-  min-height: 76rpx;
+  min-height: 78rpx;
   align-items: center;
   justify-content: center;
-  gap: 8rpx;
-  margin: 0;
-  padding: 12rpx 16rpx;
-  border-radius: $radius-control;
-  font-size: 23rpx;
-  font-weight: 700;
+  margin: 0 6rpx;
+  padding: 12rpx;
+  border-radius: 14px;
+  font-size: 22rpx;
+  font-weight: 620;
 }
 
 .resume-dialog__action--primary {
   border: 1px solid $color-primary;
-  color: #ffffff;
+  color: #fff;
   background: $color-primary;
 }
+
+.resume-dialog__action--primary text,
+.resume-dialog__action--secondary text { margin-left: 8rpx; }
 
 .resume-dialog__action--secondary {
   border: 1px solid $color-border;

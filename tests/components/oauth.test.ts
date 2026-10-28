@@ -29,6 +29,13 @@ vi.mock('@/features/auth/oauthWebview', () => ({
 }))
 
 describe('OAuth page', () => {
+  it('uses the branded authorization shell', () => {
+    const { wrapper } = mountOAuth()
+    expect(wrapper.get('.oauth-page').classes()).toContain('oauth-page--premium')
+    expect(wrapper.find('.oauth-brand-mark').exists()).toBe(true)
+  })
+
+
   beforeEach(() => {
     Object.assign(oauthPageMocks.config, {
       baiduAppKey: 'public-app-key',
@@ -41,6 +48,15 @@ describe('OAuth page', () => {
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn(() => 'secure-state-uuid')
     })
+  })
+
+  it('waits for the primary authorization action before opening the WebView', async () => {
+    const { wrapper } = mountOAuth(false)
+    await flushPromises()
+
+    expect(oauthPageMocks.openOAuthWebview).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="oauth-start"]').trigger('click')
+    expect(oauthPageMocks.openOAuthWebview).toHaveBeenCalledOnce()
   })
 
   it('shows the exact missing-AppKey state and never opens a WebView', async () => {
@@ -293,13 +309,16 @@ describe('OAuth page', () => {
   })
 })
 
-function mountOAuth() {
+function mountOAuth(start = true) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useAppStore(pinia)
   const wrapper = mount(OAuthPage, {
     global: { plugins: [pinia] }
   })
+  if (start && wrapper.find('[data-testid="oauth-start"]').exists()) {
+    void wrapper.get('[data-testid="oauth-start"]').trigger('click')
+  }
 
   return { store, wrapper }
 }

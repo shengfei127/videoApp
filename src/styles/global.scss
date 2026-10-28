@@ -4,35 +4,49 @@ page {
   min-height: 100%;
   background: $color-bg;
   color: $color-text;
-  font-family: Inter, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: 'PingFang SC', 'SF Pro Display', 'Avenir Next', 'Microsoft YaHei', sans-serif;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+uni-button,
+input,
+uni-input,
+textarea,
+uni-textarea {
+  font-family: inherit;
   letter-spacing: 0;
 }
 
 button,
-input,
-textarea {
-  letter-spacing: 0;
-}
-
-button {
+uni-button {
   box-sizing: border-box;
   text-align: center;
+  line-height: 1.4 !important;
 }
 
-button::after {
-  border: 0;
+button::after,
+uni-button::after {
+  border: 0 !important;
 }
 
 .page-shell {
   box-sizing: border-box;
+  width: 100%;
+  max-width: 960rpx;
   min-height: 100vh;
-  padding: var(--status-bar-height, 0px) 24rpx 132rpx;
+  margin: 0 auto;
+  padding: var(--status-bar-height, 0px) 34rpx calc(132rpx + env(safe-area-inset-bottom));
 }
 
 .section-title {
-  margin: 28rpx 0 16rpx;
-  font-size: 28rpx;
-  font-weight: 700;
+  display: block;
+  margin: 36rpx 0 20rpx;
+  color: $color-text;
+  font-size: 30rpx;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 .muted {

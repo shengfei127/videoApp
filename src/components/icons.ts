@@ -34,3 +34,8 @@ export const Settings = icon('Settings')
 export const ShieldCheck = icon('ShieldCheck')
 export const Trash2 = icon('Trash2')
 export const X = icon('X')
+
+export const CalendarDays = icon('CalendarDays')
+export const SquarePlay = icon('SquarePlay')
+export const Pause = icon('Pause')
+export const Maximize = icon('Maximize')

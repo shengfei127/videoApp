@@ -102,7 +102,7 @@ function isQueryKeyCharacter(charCode: number): boolean {
 </script>
 
 <template>
-  <view class="video-thumbnail">
+  <view class="video-thumbnail video-thumbnail--premium">
     <image
       v-if="safeSrc"
       data-testid="video-thumbnail-image"

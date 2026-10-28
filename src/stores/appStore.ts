@@ -8,9 +8,13 @@ import {
 } from '@/config/runtime'
 import type {
   BaiduAuthSession,
+  DailyUnlockCourse,
+  DailyUnlockEpisode,
+  DailyUnlockSettings,
   DirectVideoRecord,
   PlaybackProgress,
-  VideoItem
+  VideoItem,
+  VideoUnlockStatus
 } from '@/domain/video'
 import { AuthRepository } from '@/features/auth/authRepository'
 import { BaiduDriveSource } from '@/features/baidu/baiduDriveSource'
@@ -21,8 +25,14 @@ import {
 } from '@/features/catalog/catalogCache'
 import { buildFolderTree } from '@/features/catalog/folderTree'
 import { DirectLinkService } from '@/features/direct-links/directLinkService'
+import { DailyUnlockRepository } from '@/features/daily-unlock/dailyUnlockRepository'
+import {
+  findCourseConflict,
+  getVideoUnlockStatus
+} from '@/features/daily-unlock/dailyUnlockPolicy'
 import { classifyProgress } from '@/features/playback/progressPolicy'
 import { ProgressRepository } from '@/features/playback/progressRepository'
+import { createSecureUuid } from '@/infrastructure/secureRandom'
 import { uniStorage } from '@/infrastructure/storage'
 import {
   bootstrapMocks as runBootstrapMocks,
@@ -109,7 +119,14 @@ type MockBootstrapper = (
   options?: BootstrapMocksOptions
 ) => MockBootstrapData | null
 
+export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath'>
+
+export type DailyUnlockCourseResult =
+  | { ok: true; course: DailyUnlockCourse }
+  | { ok: false; reason: 'invalid' | 'conflict' | 'storage' }
+
 export interface AppStoreDependencies {
+  dailyUnlockRepository: Pick<DailyUnlockRepository, 'load' | 'save'>
   authRepository: AuthSessionRepository
   directLinkService: DirectRecordsRepository
   progressRepository: PlaybackProgressRepository
@@ -137,6 +154,8 @@ export function createAppStore(
     const directRecords = ref<DirectVideoRecord[]>([])
     const progressHistory = ref<PlaybackProgress[]>([])
     const resumableProgress = ref<PlaybackProgress[]>([])
+    const dailyUnlockSettings = ref<DailyUnlockSettings>({ enabled: false, courses: [] })
+    const dailyUnlockNow = ref(0)
     const syncStatus = ref<AppSyncStatus>('idle')
     const lastError = ref<AppSafeError | null>(null)
     const initialized = ref(false)
@@ -156,9 +175,31 @@ export function createAppStore(
           haystack: `${video.name.toLocaleLowerCase('zh-CN')}\n${video.path.toLocaleLowerCase('zh-CN')}`
         }))
     )
-    const recentVideos = computed<VideoItem[]>(() =>
+    const catalogRecentVideos = computed<VideoItem[]>(() =>
       searchIndex.value.map(({ video }) => ({ ...video }))
     )
+    const recentVideos = computed<VideoItem[]>(() => {
+      const videosById = new Map(
+        mergedVideos.value.map((video) => [video.id, video] as const)
+      )
+      const seen = new Set<string>()
+      return progressHistory.value
+        .map((progress) => ({
+          video: videosById.get(progress.videoId),
+          progress
+        }))
+        .filter((item): item is { video: VideoItem; progress: PlaybackProgress } => Boolean(item.video))
+        .sort((left, right) =>
+          compareDescendingTimestamp(left.progress.updatedAt, right.progress.updatedAt) ||
+          compareText(left.video.id, right.video.id)
+        )
+        .filter(({ video }) => {
+          if (seen.has(video.id)) return false
+          seen.add(video.id)
+          return true
+        })
+        .map(({ video }) => ({ ...video }))
+    })
     const continueWatching = computed<ContinueWatchingItem[]>(() => {
       const videosById = new Map(
         mergedVideos.value.map((video) => [video.id, video] as const)
@@ -183,7 +224,7 @@ export function createAppStore(
     const searchResults = computed<VideoItem[]>(() => {
       const query = searchQuery.value.trim().toLocaleLowerCase('zh-CN')
       if (!query) {
-        return recentVideos.value
+        return catalogRecentVideos.value
       }
 
       return searchIndex.value
@@ -243,6 +284,16 @@ export function createAppStore(
 
       let localLoadFailed = false
       const now = dependencies.now()
+      dailyUnlockNow.value = now
+
+      try {
+        dailyUnlockSettings.value = cloneDailyUnlockSettings(
+          dependencies.dailyUnlockRepository.load()
+        )
+      } catch {
+        dailyUnlockSettings.value = { enabled: false, courses: [] }
+        localLoadFailed = true
+      }
 
       try {
         const session = dependencies.authRepository.getValidSession(now)
@@ -474,6 +525,122 @@ export function createAppStore(
       return directRecords.value.map((record) => ({ ...record }))
     }
 
+    function refreshDailyUnlockClock(now = dependencies.now()): void {
+      if (Number.isFinite(now)) {
+        dailyUnlockNow.value = now
+      }
+    }
+
+    function videoUnlockStatus(videoId: string): VideoUnlockStatus {
+      return getVideoUnlockStatus(
+        dailyUnlockSettings.value,
+        videoId,
+        dailyUnlockNow.value
+      )
+    }
+
+    function setDailyUnlockEnabled(enabled: boolean): boolean {
+      const next = { ...cloneDailyUnlockSettings(dailyUnlockSettings.value), enabled }
+      try {
+        dependencies.dailyUnlockRepository.save(next)
+      } catch {
+        return false
+      }
+      dailyUnlockSettings.value = next
+      refreshDailyUnlockClock()
+      return true
+    }
+
+    function createDailyUnlockCourse(
+      input: CreateDailyUnlockCourseInput
+    ): DailyUnlockCourseResult {
+      const name = typeof input?.name === 'string' ? input.name.trim() : ''
+      if (
+        !name ||
+        !Array.isArray(input.episodes) ||
+        input.episodes.length === 0 ||
+        input.episodes.length > 500
+      ) {
+        return { ok: false, reason: 'invalid' }
+      }
+      const episodes: DailyUnlockEpisode[] = []
+      const seenVideoIds = new Set<string>()
+      for (const episode of input.episodes) {
+        if (
+          !episode ||
+          typeof episode.videoId !== 'string' ||
+          !episode.videoId.trim() ||
+          episode.videoId.length > 512 ||
+          typeof episode.name !== 'string' ||
+          !episode.name.trim() ||
+          episode.name.trim().length > 160 ||
+          (episode.sourceType !== 'baidu' && episode.sourceType !== 'direct') ||
+          seenVideoIds.has(episode.videoId)
+        ) {
+          return { ok: false, reason: 'invalid' }
+        }
+        seenVideoIds.add(episode.videoId)
+        if (episode.sourceType === 'baidu' && !episode.path) {
+          return { ok: false, reason: 'invalid' }
+        }
+        episodes.push({
+          videoId: episode.videoId,
+          name: episode.name.trim(),
+          sourceType: episode.sourceType,
+          ...(episode.sourceType === 'baidu' ? { path: episode.path } : {})
+        })
+      }
+      const conflict = findCourseConflict(
+        dailyUnlockSettings.value.courses,
+        episodes.map(({ videoId }) => videoId)
+      )
+      if (conflict) {
+        return { ok: false, reason: 'conflict' }
+      }
+      let id: string
+      try {
+        id = createSecureUuid()
+      } catch {
+        return { ok: false, reason: 'storage' }
+      }
+      const course: DailyUnlockCourse = {
+        id,
+        name,
+        createdAt: dependencies.now(),
+        ...(input.sourceFolderPath ? { sourceFolderPath: input.sourceFolderPath } : {}),
+        episodes
+      }
+      const next = {
+        ...cloneDailyUnlockSettings(dailyUnlockSettings.value),
+        courses: [...dailyUnlockSettings.value.courses, course]
+      }
+      try {
+        dependencies.dailyUnlockRepository.save(next)
+      } catch {
+        return { ok: false, reason: 'storage' }
+      }
+      dailyUnlockSettings.value = next
+      refreshDailyUnlockClock()
+      return { ok: true, course: cloneDailyUnlockCourse(course) }
+    }
+
+    function deleteDailyUnlockCourse(courseId: string): boolean {
+      if (!dailyUnlockSettings.value.courses.some((course) => course.id === courseId)) {
+        return true
+      }
+      const next = {
+        ...cloneDailyUnlockSettings(dailyUnlockSettings.value),
+        courses: dailyUnlockSettings.value.courses.filter((course) => course.id !== courseId)
+      }
+      try {
+        dependencies.dailyUnlockRepository.save(next)
+      } catch {
+        return false
+      }
+      dailyUnlockSettings.value = next
+      return true
+    }
+
     function reloadProgress(): PlaybackProgress[] {
       try {
         const history = dependencies.progressRepository
@@ -623,7 +790,15 @@ export function createAppStore(
       nextSyncAllowedAt,
       searchQuery,
       mergedVideos,
+      catalogRecentVideos,
       recentVideos,
+      dailyUnlockSettings,
+      dailyUnlockNow,
+      videoUnlockStatus,
+      refreshDailyUnlockClock,
+      setDailyUnlockEnabled,
+      createDailyUnlockCourse,
+      deleteDailyUnlockCourse,
       continueWatching,
       searchResults,
       folderTree,
@@ -699,6 +874,14 @@ function isValidSessionAt(
   )
 }
 
+function cloneDailyUnlockCourse(course: DailyUnlockCourse): DailyUnlockCourse {
+  return { ...course, episodes: course.episodes.map((episode) => ({ ...episode })) }
+}
+
+function cloneDailyUnlockSettings(settings: DailyUnlockSettings): DailyUnlockSettings {
+  return { enabled: settings.enabled, courses: settings.courses.map(cloneDailyUnlockCourse) }
+}
+
 function cloneSession(session: BaiduAuthSession): BaiduAuthSession {
   return { ...session, scope: [...session.scope] }
 }
@@ -757,6 +940,7 @@ function safeError(code: AppSafeErrorCode): AppSafeError {
 }
 
 const runtimeDependencies: AppStoreDependencies = {
+  dailyUnlockRepository: new DailyUnlockRepository(uniStorage),
   authRepository: new AuthRepository(uniStorage),
   directLinkService: new DirectLinkService(uniStorage),
   progressRepository: new ProgressRepository(uniStorage),
@@ -765,7 +949,7 @@ const runtimeDependencies: AppStoreDependencies = {
   }),
   baiduDriveSource: new BaiduDriveSource(runtimeConfig.baiduRoot),
   config: runtimeConfig,
-  now: Date.now,
+  now: () => Date.now(),
   bootstrapMocks: runBootstrapMocks
 }
 
