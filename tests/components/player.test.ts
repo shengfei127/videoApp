@@ -392,6 +392,12 @@ describe('Player page', () => {
     expect(wrapper.get('[data-testid="player-locked"]').text()).toContain('00:00 解锁')
     expect(wrapper.text()).not.toContain('never-render')
 
+    store.dailyUnlockSettings.courses[0]!.pausedAt = createdAt
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="player-locked"]').text()).toContain('课程已暂停')
+    expect(wrapper.get('[data-testid="player-locked"]').text()).not.toContain('可以开始播放')
+    delete store.dailyUnlockSettings.courses[0]!.pausedAt
+
     vi.setSystemTime(nextMidnight)
     store.refreshDailyUnlockClock()
     await wrapper.vm.$nextTick()

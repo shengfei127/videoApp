@@ -48,7 +48,7 @@ describe('Settings page', () => {
 
     expect(toggle.attributes('role')).toBe('switch')
     expect(toggle.attributes('aria-checked')).toBe('false')
-    expect(wrapper.text()).toContain('每日零点解锁下一集')
+    expect(wrapper.text()).toContain('按各门课程设置的每日集数')
     expect(wrapper.text()).toContain('0 门课程')
 
     await toggle.trigger('click')
@@ -57,8 +57,32 @@ describe('Settings page', () => {
 
     await manage.trigger('click')
     expect(uni.navigateTo).toHaveBeenCalledWith({
-      url: '/pages/daily-unlock/index'
+      url: '/pages/daily-unlock/index',
+      animationType: 'slide-in-bottom'
     })
+  })
+
+  it('distinguishes paused, completed, and disabled learning schedules', async () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const { store, wrapper } = mountSettings((store) => {
+      store.dailyUnlockNow = now
+      store.dailyUnlockSettings = { enabled: true, courses: [{
+        id: 'paused', name: '暂停课程', createdAt: now, pausedAt: now, dailyEpisodeCount: 2,
+        episodes: [1, 2, 3].map((n) => ({ videoId: `direct:${n}`, name: `第${n}集`, sourceType: 'direct' as const }))
+      }] }
+    })
+    expect(wrapper.text()).toContain('1 门课程 · 1 门已暂停')
+    expect(wrapper.text()).toContain('恢复暂停的计划')
+    expect(wrapper.text()).not.toContain('下次解锁')
+    delete store.dailyUnlockSettings.courses[0]!.pausedAt
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('下次解锁 2026/10/29 00:00')
+    store.dailyUnlockNow = new Date(2026, 9, 30).getTime()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('全部课程已开放')
+    store.dailyUnlockSettings.enabled = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('每日解锁已关闭，所有视频均可播放')
   })
 
   it('shows source metadata and privacy state without rendering credentials or URLs', () => {

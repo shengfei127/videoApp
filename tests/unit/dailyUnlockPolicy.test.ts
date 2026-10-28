@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   findCourseConflict,
+  getTodayCourseEpisode,
+  getTodayCourseEpisodes,
+  getNextCourseUnlockAt,
+  rescheduleDailyUnlockCourse,
   getUnlockedEpisodeCount,
   getVideoUnlockStatus,
   sortCourseEpisodes,
@@ -23,6 +27,50 @@ function course(createdAt: number, episodes = 3) {
 }
 
 describe('dailyUnlockPolicy', () => {
+  it('supports several daily episodes and a partial final day', () => {
+    const plan = { ...course(new Date(2026, 9, 27, 8).getTime(), 5), dailyEpisodeCount: 2 }
+    expect(getTodayCourseEpisodes(plan, new Date(2026, 9, 27, 12).getTime()).map((item) => item.videoId)).toEqual(['video-1', 'video-2'])
+    expect(getTodayCourseEpisodes(plan, new Date(2026, 9, 29).getTime()).map((item) => item.videoId)).toEqual(['video-5'])
+    expect(getTodayCourseEpisodes(plan, new Date(2026, 9, 30).getTime())).toEqual([])
+    expect(getNextCourseUnlockAt(plan, new Date(2026, 9, 27, 12).getTime())).toBe(new Date(2026, 9, 28).getTime())
+  })
+
+  it('changes the rate tomorrow without relocking released episodes or losing today lessons', () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const plan = { ...course(new Date(2026, 9, 27, 8).getTime(), 20), dailyEpisodeCount: 3 }
+    const updated = rescheduleDailyUnlockCourse(plan, { dailyEpisodeCount: 1, name: ' 新名称 ' }, now)
+    expect(updated.name).toBe('新名称')
+    expect(getUnlockedEpisodeCount(updated, now)).toBe(6)
+    expect(getTodayCourseEpisodes(updated, now).map((item) => item.videoId)).toEqual(['video-4', 'video-5', 'video-6'])
+    expect(getTodayCourseEpisodes(updated, new Date(2026, 9, 29).getTime()).map((item) => item.videoId)).toEqual(['video-7'])
+    expect(getVideoUnlockStatus({ enabled: true, courses: [updated] }, 'video-8', now).unlockAt).toBe(new Date(2026, 9, 30).getTime())
+  })
+
+  it('freezes a paused plan and resumes tomorrow without accumulating missed releases', () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const plan = course(new Date(2026, 9, 27, 8).getTime(), 10)
+    const paused = rescheduleDailyUnlockCourse(plan, { paused: true }, now)
+    const later = new Date(2026, 10, 5, 12).getTime()
+    expect(getUnlockedEpisodeCount(paused, later)).toBe(2)
+    expect(getTodayCourseEpisodes(paused, later)).toEqual([])
+    expect(getNextCourseUnlockAt(paused, later)).toBeUndefined()
+    expect(getVideoUnlockStatus({ enabled: true, courses: [paused] }, 'video-3', later)).toMatchObject({ locked: true })
+    expect(getVideoUnlockStatus({ enabled: true, courses: [paused] }, 'video-3', later).unlockAt).toBeUndefined()
+    const resumed = rescheduleDailyUnlockCourse(paused, { paused: false }, later)
+    expect(getUnlockedEpisodeCount(resumed, later)).toBe(2)
+    expect(getTodayCourseEpisodes(resumed, later)).toEqual([])
+    expect(getNextCourseUnlockAt(resumed, later)).toBe(new Date(2026, 10, 6).getTime())
+    expect(getTodayCourseEpisodes(resumed, new Date(2026, 10, 6).getTime())[0]?.videoId).toBe('video-3')
+  })
+  it('selects only the episode scheduled for the current local day', () => {
+    const createdAt = new Date(2026, 9, 27, 23, 59).getTime()
+    const plan = course(createdAt, 2)
+    expect(getTodayCourseEpisode(plan, createdAt)?.videoId).toBe('video-1')
+    expect(getTodayCourseEpisode(plan, new Date(2026, 9, 28).getTime())?.videoId).toBe('video-2')
+    expect(getTodayCourseEpisode(plan, new Date(2026, 9, 29).getTime())).toBeUndefined()
+    expect(getTodayCourseEpisode(plan, new Date(2026, 9, 26).getTime())).toBeUndefined()
+    expect(getTodayCourseEpisode(plan, NaN)).toBeUndefined()
+  })
   it('unlocks the first episode on creation day and the next at local midnight', () => {
     const createdAt = new Date(2026, 9, 27, 9, 30).getTime()
     const settings = { enabled: true, courses: [course(createdAt)] }

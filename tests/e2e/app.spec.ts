@@ -198,6 +198,13 @@ test('daily course locks the next episode until local midnight', async ({ page }
   await page.screenshot({ path: testInfo.outputPath('course.png'), fullPage: true })
 
   await page.locator('[aria-label="返回设置"]').click()
+  await page.locator('.bottom-nav').getByLabel('首页').click()
+  await expect(page.locator('.bottom-nav__item')).toHaveCount(3)
+  const todayLearning = page.locator('[data-home-section="today"]')
+  await expect(todayLearning).toContainText('每日试听课 · 第 1 集')
+  await expect(todayLearning).toContainText('第2站·海边.mp4')
+  await expect(todayLearning).not.toContainText('第10站·山间.mp4')
+  await page.screenshot({ path: testInfo.outputPath('home-today.png'), fullPage: true })
   await page.locator('.bottom-nav__item').nth(1).click()
   await page.locator('[aria-label="播放视频：第2站·海边.mp4"]').click()
   await expect(page.locator('video[data-testid="player-video"]')).toBeVisible()

@@ -70,6 +70,14 @@ function sanitizeCourse(value: unknown): DailyUnlockCourse | null {
     sourceFolderPath = value.sourceFolderPath
   }
 
+  if (value.dailyEpisodeCount !== undefined && (!Number.isInteger(value.dailyEpisodeCount) || Number(value.dailyEpisodeCount) < 1 || Number(value.dailyEpisodeCount) > 10)) return null
+  if (value.pausedAt !== undefined && !isTimestamp(value.pausedAt)) return null
+  const anchorFields = [value.scheduleAnchorAt, value.scheduleAnchorUnlockedCount, value.scheduleAnchorTodayStart]
+  if (anchorFields.some((field) => field !== undefined)) {
+    if (!isTimestamp(value.scheduleAnchorAt) || !Number.isInteger(value.scheduleAnchorUnlockedCount) || !Number.isInteger(value.scheduleAnchorTodayStart)) return null
+    if (Number(value.scheduleAnchorTodayStart) < 0 || Number(value.scheduleAnchorTodayStart) > Number(value.scheduleAnchorUnlockedCount) || Number(value.scheduleAnchorUnlockedCount) > value.episodes.length) return null
+  }
+
   const episodes: DailyUnlockEpisode[] = []
   const episodeIds = new Set<string>()
   for (const item of value.episodes) {
@@ -83,6 +91,13 @@ function sanitizeCourse(value: unknown): DailyUnlockCourse | null {
     id: value.id,
     name: value.name.trim(),
     createdAt: value.createdAt as number,
+    ...(value.dailyEpisodeCount !== undefined ? { dailyEpisodeCount: value.dailyEpisodeCount as number } : {}),
+    ...(value.pausedAt !== undefined ? { pausedAt: value.pausedAt as number } : {}),
+    ...(value.scheduleAnchorAt !== undefined ? {
+      scheduleAnchorAt: value.scheduleAnchorAt as number,
+      scheduleAnchorUnlockedCount: value.scheduleAnchorUnlockedCount as number,
+      scheduleAnchorTodayStart: value.scheduleAnchorTodayStart as number
+    } : {}),
     ...(sourceFolderPath ? { sourceFolderPath } : {}),
     episodes
   }
@@ -132,6 +147,10 @@ function isSafeBaiduPath(value: unknown): value is string {
 
 function isValidId(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_ID_LENGTH && !CONTROL_CHARACTERS.test(value)
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && Number.isFinite(new Date(value).getTime())
 }
 
 function isValidName(value: unknown): value is string {

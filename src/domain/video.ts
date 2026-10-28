@@ -26,6 +26,7 @@ export interface PlaybackProgress {
   durationSeconds: number
   updatedAt: number
   completed: boolean
+  manualCompleted?: boolean
 }
 
 export interface DailyUnlockEpisode {
@@ -41,6 +42,11 @@ export interface DailyUnlockCourse {
   createdAt: number
   sourceFolderPath?: string
   episodes: DailyUnlockEpisode[]
+  dailyEpisodeCount?: number
+  pausedAt?: number
+  scheduleAnchorAt?: number
+  scheduleAnchorUnlockedCount?: number
+  scheduleAnchorTodayStart?: number
 }
 
 export interface DailyUnlockSettings {

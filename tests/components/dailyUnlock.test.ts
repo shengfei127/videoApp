@@ -9,10 +9,30 @@ import { useAppStore } from '@/stores/appStore'
 vi.mock('@dcloudio/uni-app', () => ({ onShow: vi.fn(), onHide: vi.fn(), onUnload: vi.fn() }))
 
 describe('DailyUnlock page', () => {
-  it('uses the premium course shell and main navigation', () => {
+  it('uses the premium course shell without main navigation', () => {
     const { wrapper } = mountDailyUnlock()
     expect(wrapper.get('.daily-unlock-page').classes()).toContain('daily-unlock-page--premium')
     expect(wrapper.find('.bottom-nav').exists()).toBe(false)
+  })
+
+  it('dismisses course management back to the settings page', async () => {
+    vi.stubGlobal('getCurrentPages', () => [{ route: 'pages/settings/index' }, { route: 'pages/daily-unlock/index' }])
+    const { wrapper } = mountDailyUnlock()
+
+    await wrapper.get('[aria-label="返回设置"]').trigger('click')
+
+    expect(uni.navigateBack).toHaveBeenCalledWith({ animationType: 'slide-out-bottom' })
+    expect(uni.redirectTo).not.toHaveBeenCalled()
+  })
+
+  it('returns directly opened course management to settings', async () => {
+    vi.stubGlobal('getCurrentPages', () => [{ route: 'pages/daily-unlock/index' }])
+    const { wrapper } = mountDailyUnlock()
+
+    await wrapper.get('[aria-label="返回设置"]').trigger('click')
+
+    expect(uni.redirectTo).toHaveBeenCalledWith({ url: '/pages/settings/index' })
+    expect(uni.navigateBack).not.toHaveBeenCalled()
   })
 
 
@@ -38,6 +58,44 @@ describe('DailyUnlock page', () => {
     await wrapper.get('[data-testid="mode-videos"]').trigger('click')
 
     expect(wrapper.find('[data-video-id="baidu:thumbnail"] .video-thumbnail--premium').exists()).toBe(true)
+  })
+  it('previews several daily episodes and edits, pauses, and resumes an existing plan', async () => {
+    const now = new Date(2026, 9, 27, 12).getTime()
+    const { store, wrapper } = mountDailyUnlock((store) => {
+      store.dailyUnlockNow = now
+      store.baiduVideos = Array.from({ length: 4 }, (_, index) => video(String(index + 1), `第${index + 1}集.mp4`, `/apps/片刻/课程/第${index + 1}集.mp4`))
+    })
+    await wrapper.get('[data-folder-path="/apps/片刻/课程"]').trigger('click')
+    await wrapper.get('[data-testid="daily-episode-count"]').setValue('2')
+    expect(wrapper.get('[data-testid="schedule-preview"]').text()).toContain('今天：第1集.mp4、第2集.mp4')
+    expect(wrapper.get('[data-testid="schedule-preview"]').text()).toContain('明天：第3集.mp4、第4集.mp4')
+    await wrapper.get('[data-testid="create-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.dailyEpisodeCount).toBe(2)
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('已学完 0 / 4 集')
+    await wrapper.get('[data-testid="edit-course"]').trigger('click')
+    await wrapper.get('[data-testid="edit-course-name"]').setValue('重新安排')
+    await wrapper.get('[data-testid="edit-course-count"]').setValue('1')
+    await wrapper.get('[data-testid="save-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]).toMatchObject({ name: '重新安排', dailyEpisodeCount: 1, scheduleAnchorUnlockedCount: 2 })
+    expect(wrapper.find('[data-testid="course-edit"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="pause-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.pausedAt).toBe(now)
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('计划已暂停')
+    await wrapper.get('[data-testid="pause-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.pausedAt).toBeUndefined()
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('下一集 2026-10-28 00:00 开放')
+  })
+
+  it('preserves edit inputs and reports a failed save', async () => {
+    const { store, wrapper } = mountDailyUnlock((store) => {
+      store.dailyUnlockSettings.courses = [{ id: 'c', name: '原课程', createdAt: Date.now(), episodes: [{ videoId: 'direct:1', name: '第一集', sourceType: 'direct' }] }]
+    })
+    await wrapper.get('[data-testid="edit-course"]').trigger('click')
+    await wrapper.get('[data-testid="edit-course-name"]').setValue('新课程')
+    vi.spyOn(store, 'updateDailyUnlockCourse').mockReturnValue(false)
+    await wrapper.get('[data-testid="save-course"]').trigger('click')
+    expect(wrapper.get('[data-testid="course-edit"]').text()).toContain('保存失败')
+    expect(store.dailyUnlockSettings.courses[0]?.name).toBe('原课程')
   })
   it('snapshots a folder including nested videos in natural episode order', async () => {
     const { store, wrapper } = mountDailyUnlock((appStore) => {

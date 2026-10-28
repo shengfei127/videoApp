@@ -21,6 +21,11 @@ const selectedFolderPath = ref('')
 const selectedVideoIds = ref<Set<string>>(new Set())
 const videoQuery = ref('')
 const courseName = ref('')
+const dailyEpisodeCount = ref(1)
+const editingCourseId = ref('')
+const editName = ref('')
+const editDailyCount = ref(1)
+const editError = ref('')
 const formError = ref('')
 const folderPickerOpen = ref(false)
 const orderPreviewOpen = ref(false)
@@ -42,6 +47,12 @@ const selectedVideos = computed(() => {
   return store.mergedVideos.filter((video) => selected.has(video.id))
 })
 const episodeSnapshots = computed(() => snapshotCourseEpisodes(selectedVideos.value))
+const schedulePreview = computed(() => [0, 1, 2].flatMap((day) => {
+  const start = day * Number(dailyEpisodeCount.value)
+  const episodes = episodeSnapshots.value.slice(start, start + Number(dailyEpisodeCount.value))
+  return episodes.length ? [{ label: ['今天', '明天', '后天'][day], names: episodes.map((episode) => episode.name).join('、') }] : []
+}))
+const completedIds = computed(() => new Set(store.progressHistory.filter((item) => item.completed).map((item) => item.videoId)))
 const episodeVideos = computed(() =>
   episodeSnapshots.value.map((episode) =>
     store.mergedVideos.find((video) => video.id === episode.videoId) ?? {
@@ -95,6 +106,10 @@ function createCourse(): void {
     showFormError('请先填写课程名称')
     return
   }
+  if (!validRate(dailyEpisodeCount.value)) {
+    showFormError('每天学习集数需为 1 到 10 的整数')
+    return
+  }
   if (!episodeSnapshots.value.length) {
     showFormError('请选择一个含视频的文件夹或至少一集视频')
     return
@@ -106,6 +121,7 @@ function createCourse(): void {
 
   const result = store.createDailyUnlockCourse({
     name: courseName.value,
+    dailyEpisodeCount: Number(dailyEpisodeCount.value),
     episodes: episodeSnapshots.value,
     ...(selectionMode.value === 'folder' && selectedFolder.value
       ? { sourceFolderPath: selectedFolder.value.path }
@@ -121,9 +137,49 @@ function createCourse(): void {
   }
 
   courseName.value = ''
+  dailyEpisodeCount.value = 1
   selectedFolderPath.value = ''
   selectedVideoIds.value = new Set()
   uni.showToast({ title: '课程已创建', icon: 'none' })
+}
+
+function validRate(value: unknown): boolean {
+  const rate = Number(value)
+  return Number.isInteger(rate) && rate >= 1 && rate <= 10
+}
+
+function startEditing(course: DailyUnlockCourse): void {
+  editingCourseId.value = course.id
+  editName.value = course.name
+  editDailyCount.value = course.dailyEpisodeCount ?? 1
+  editError.value = ''
+}
+
+function saveEditing(): void {
+  if (!editName.value.trim() || !validRate(editDailyCount.value)) {
+    editError.value = '请填写课程名称，每天学习集数需为 1 到 10 的整数'
+    return
+  }
+  if (!store.updateDailyUnlockCourse(editingCourseId.value, { name: editName.value, dailyEpisodeCount: Number(editDailyCount.value) })) {
+    editError.value = '保存失败，请稍后重试'
+    return
+  }
+  editingCourseId.value = ''
+  uni.showToast({ title: '课程已更新', icon: 'none' })
+}
+
+function togglePause(course: DailyUnlockCourse): void {
+  const paused = course.pausedAt === undefined
+  const saved = store.updateDailyUnlockCourse(course.id, { paused })
+  uni.showToast({ title: saved ? (paused ? '已暂停，已开放内容仍可学习' : '已恢复，明天继续开放新内容') : '保存失败，请稍后重试', icon: 'none' })
+}
+
+function learnedCount(course: DailyUnlockCourse): number {
+  return course.episodes.filter((episode) => completedIds.value.has(episode.videoId)).length
+}
+
+function openLibrary(): void {
+  uni.navigateTo({ url: '/pages/library/index' })
 }
 
 function requestDeleteCourse(courseId: string, name: string): void {
@@ -149,7 +205,7 @@ function requestDeleteCourse(courseId: string, name: string): void {
 
 function goBack(): void {
   if (typeof getCurrentPages === 'function' && getCurrentPages().length > 1) {
-    uni.navigateBack()
+    uni.navigateBack({ animationType: 'slide-out-bottom' })
   } else {
     uni.redirectTo({ url: '/pages/settings/index' })
   }
@@ -167,6 +223,7 @@ function courseProgressPercent(course: DailyUnlockCourse): string {
 }
 
 function courseNextUnlock(course: DailyUnlockCourse): string {
+  if (course.pausedAt !== undefined) return '计划已暂停，已开放内容仍可学习'
   const next = getNextCourseUnlockAt(course, store.dailyUnlockNow)
   return next === undefined ? '课程已全部解锁' : `下一集 ${formatLocalMidnight(next)} 开放`
 }
@@ -219,7 +276,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
 
     <view class="daily-unlock-notice" role="status">
       <view class="daily-unlock-notice__dot" aria-hidden="true" />
-      <text>{{ store.dailyUnlockSettings.enabled ? '每日零点开放下一集' : '每日课程已关闭，开启后按自然日解锁' }}</text>
+      <text>{{ store.dailyUnlockSettings.enabled ? '每天零点按计划开放新内容' : '每日课程已关闭，开启后按自然日解锁' }}</text>
 
     </view>
 
@@ -229,6 +286,12 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
           <text class="daily-visually-hidden">课程名称</text>
           <input v-model="courseName" data-testid="course-name" maxlength="80" @input="formError = ''" placeholder="输入课程名称" />
         </label>
+
+        <label class="daily-field daily-rate-field">
+          <text>每天学习几集</text>
+          <input v-model="dailyEpisodeCount" type="number" data-testid="daily-episode-count" aria-label="每天学习集数" />
+        </label>
+        <text class="daily-plan-hint">今天从第 1 集开始，每天开放 {{ dailyEpisodeCount || 1 }} 集；已有视频不会重复加入课程。</text>
 
         <view class="daily-mode" role="group" aria-label="课程内容来源">
           <button type="button" data-testid="mode-folder" :aria-pressed="selectionMode === 'folder'" :class="{ 'daily-mode__button--active': selectionMode === 'folder' }" @click="setSelectionMode('folder')">按文件夹</button>
@@ -255,7 +318,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               <text class="daily-folder-choice__count">{{ countFolderVideos(choice.folder) }} 集</text>
             </button>
           </view>
-          <view v-else class="daily-empty">同步视频目录后可按文件夹创建课程</view>
+          <view v-else class="daily-empty">同步视频目录后可按文件夹创建课程<button class="daily-text-action" @click="openLibrary">前往视频库</button></view>
           <view v-if="episodeVideos.length" class="daily-episode-preview" data-testid="episode-preview">
             <view v-for="(video, index) in episodeVideos" :key="video.id" class="daily-episode-row">
               <view class="daily-video-choice__thumbnail">
@@ -291,7 +354,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               <view class="daily-check" aria-hidden="true">{{ selectedVideoIds.has(video.id) ? '✓' : '' }}</view>
             </button>
           </view>
-          <view v-else class="daily-empty">{{ videoQuery ? '没有匹配的视频' : '视频库为空，先添加视频来源' }}</view>
+          <view v-else class="daily-empty">{{ videoQuery ? '没有匹配的视频' : '视频库为空，先添加视频来源' }}<button v-if="!videoQuery" class="daily-text-action" @click="openLibrary">前往视频库</button></view>
         </template>
 
         <view v-if="selectionMode === 'videos' && episodeSnapshots.length" v-show="orderPreviewOpen" class="daily-selection-order" data-testid="episode-preview">
@@ -299,6 +362,10 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
         </view>
         <view class="daily-selection-summary">
           <button type="button" class="daily-selection-count" :aria-expanded="orderPreviewOpen" @click="orderPreviewOpen = !orderPreviewOpen">已选 {{ episodeSnapshots.length }} 集</button>
+        </view>
+        <view v-if="schedulePreview.length && validRate(dailyEpisodeCount)" class="daily-schedule-preview" data-testid="schedule-preview">
+          <text class="daily-plan-hint">前三天学习安排</text>
+          <text v-for="day in schedulePreview" :key="day.label">{{ day.label }}：{{ day.names }}</text>
         </view>
         <view v-if="conflictCourse" class="daily-form-error" role="alert">
           所选视频已属于课程「{{ conflictCourse.name }}」，请先移除原课程
@@ -318,6 +385,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               <view class="daily-course-card__copy">
                 <text class="daily-course-card__name">{{ course.name }}</text>
                 <text class="daily-course-card__progress">{{ courseProgress(course) }}</text>
+                <text class="daily-course-card__progress">已学完 {{ learnedCount(course) }} / {{ course.episodes.length }} 集 · 每天 {{ course.dailyEpisodeCount ?? 1 }} 集</text>
                 <text class="daily-course-card__next">{{ courseNextUnlock(course) }}</text>
                 <view class="daily-course-progress" role="progressbar" :aria-valuenow="getUnlockedEpisodeCount(course, store.dailyUnlockNow)" :aria-valuemax="course.episodes.length" :aria-label="courseProgress(course)">
                   <view class="daily-course-progress__value" :style="{ width: courseProgressPercent(course) }" />
@@ -326,6 +394,17 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               <button type="button" data-testid="delete-course" class="daily-delete-button" :aria-label="`删除课程：${course.name}`" @click="requestDeleteCourse(course.id, course.name)">
                 <Trash2 :size="19" aria-hidden="true" />
               </button>
+            </view>
+            <view class="daily-course-actions">
+              <button class="daily-text-action" data-testid="edit-course" @click="startEditing(course)">编辑计划</button>
+              <button class="daily-text-action" data-testid="pause-course" @click="togglePause(course)">{{ course.pausedAt === undefined ? '暂停计划' : '恢复计划' }}</button>
+            </view>
+            <view v-if="editingCourseId === course.id" class="daily-edit" data-testid="course-edit">
+              <label class="daily-field"><text>课程名称</text><input v-model="editName" maxlength="80" data-testid="edit-course-name" /></label>
+              <label class="daily-field"><text>每天学习集数（1–10）</text><input v-model="editDailyCount" type="number" data-testid="edit-course-count" /></label>
+              <text class="daily-plan-hint">调整集数从明天生效，已开放内容和今天的安排保留。恢复暂停的计划后，明天继续开放新内容。</text>
+              <text v-if="editError" class="daily-form-error" role="alert">{{ editError }}</text>
+              <view class="daily-course-actions"><button class="daily-text-action" @click="editingCourseId = ''">取消</button><button class="daily-text-action" data-testid="save-course" @click="saveEditing">保存修改</button></view>
             </view>
             <view class="daily-course-card__episodes">
               <text v-for="(episode, index) in course.episodes" :key="episode.videoId" :class="{ 'daily-course-episode--locked': store.dailyUnlockSettings.enabled && index >= getUnlockedEpisodeCount(course, store.dailyUnlockNow) }">
@@ -839,4 +918,11 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
 .daily-selection-count { margin: 0; padding: 0; border: 0; color: $color-muted; font-size: 20rpx; background: transparent; }
 .daily-folder-current { display: flex; justify-content: space-between; margin: 0; padding: 8rpx 0; border: 0; color: $color-muted; background: transparent; font-size: 22rpx; }
 .daily-folder-current text { color: $color-primary; }
+.daily-rate-field { flex-direction: row; align-items: center; justify-content: space-between; }
+.daily-rate-field input { width: 140rpx; text-align: center; }
+.daily-plan-hint { color: $color-muted; font-size: 21rpx; line-height: 1.5; }
+.daily-schedule-preview, .daily-edit { display: flex; flex-direction: column; padding: 18rpx; border-radius: 12px; background: $color-primary-soft; font-size: 22rpx; overflow-wrap: anywhere; }
+.daily-schedule-preview > * + *, .daily-edit > * + * { margin-top: 12rpx; }
+.daily-course-actions { display: flex; flex-wrap: wrap; margin-top: 12rpx; }
+.daily-text-action { margin: 0 18rpx 0 0; padding: 12rpx 4rpx; border: 0; color: $color-primary; background: transparent; font-size: 23rpx; line-height: 1.4; }
 </style>

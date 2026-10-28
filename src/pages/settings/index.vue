@@ -43,13 +43,18 @@ const cacheText = computed(() =>
 const dailyUnlockCourses = computed(() => store.dailyUnlockSettings.courses)
 const dailyUnlockSummary = computed(() => {
   if (!dailyUnlockCourses.value.length) return '0 门课程'
-  return `${dailyUnlockCourses.value.length} 门课程`
+  const paused = dailyUnlockCourses.value.filter((course) => course.pausedAt !== undefined).length
+  return `${dailyUnlockCourses.value.length} 门课程${paused ? ` · ${paused} 门已暂停` : ''}`
 })
 const nextDailyUnlockText = computed(() => {
+  if (!store.dailyUnlockSettings.enabled) return '每日解锁已关闭，所有视频均可播放'
+  if (!dailyUnlockCourses.value.length) return '创建课程后按本机自然日解锁'
   const timestamps = dailyUnlockCourses.value
     .map((course) => getNextCourseUnlockAt(course, store.dailyUnlockNow))
     .filter((value): value is number => typeof value === 'number')
-  if (!timestamps.length) return '创建课程后按本机自然日解锁'
+  if (!timestamps.length) return dailyUnlockCourses.value.some((course) => course.pausedAt !== undefined)
+    ? '暂无新的开放安排，可在管理课程中恢复暂停的计划'
+    : '全部课程已开放，可前往首页补学或复习'
   return `下次解锁 ${formatDateTime(Math.min(...timestamps))}`
 })
 
@@ -63,7 +68,10 @@ function toggleDailyUnlock(): void {
 }
 
 function openDailyUnlockManager(): void {
-  uni.navigateTo({ url: '/pages/daily-unlock/index' })
+  uni.navigateTo({
+    url: '/pages/daily-unlock/index',
+    animationType: 'slide-in-bottom'
+  })
 }
 
 function connectBaidu(): void {
@@ -276,7 +284,7 @@ function formatDateTime(value: number): string {
       <section class="settings-section" aria-labelledby="settings-daily-unlock-title">
         <button class="settings-menu-row" :aria-expanded="expandedSection === 'daily'" @click="toggleSection('daily')">
           <CalendarDays :size="23" aria-hidden="true" />
-          <view class="settings-menu-row__copy"><text id="settings-daily-unlock-title">每日课程</text><text class="settings-menu-row__detail">课程管理与提醒</text></view>
+          <view class="settings-menu-row__copy"><text id="settings-daily-unlock-title">每日课程</text><text class="settings-menu-row__detail">学习计划与课程管理</text></view>
           <ChevronRight :size="18" aria-hidden="true" />
         </button>
         <view v-show="expandedSection === 'daily'" class="settings-expanded">
@@ -284,7 +292,7 @@ function formatDateTime(value: number): string {
           <view class="daily-unlock-row">
             <view class="daily-unlock-copy">
               <text class="daily-unlock-title">每日解锁课程</text>
-              <text class="daily-unlock-description">开启后，每门课程每日零点解锁下一集（按本机自然日计算）</text>
+              <text class="daily-unlock-description">开启后，按各门课程设置的每日集数，在本机零点开放新内容；暂停的课程不再新增内容</text>
             </view>
             <button
               type="button"

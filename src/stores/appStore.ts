@@ -28,7 +28,8 @@ import { DirectLinkService } from '@/features/direct-links/directLinkService'
 import { DailyUnlockRepository } from '@/features/daily-unlock/dailyUnlockRepository'
 import {
   findCourseConflict,
-  getVideoUnlockStatus
+  getVideoUnlockStatus,
+  rescheduleDailyUnlockCourse
 } from '@/features/daily-unlock/dailyUnlockPolicy'
 import { classifyProgress } from '@/features/playback/progressPolicy'
 import { ProgressRepository } from '@/features/playback/progressRepository'
@@ -108,6 +109,7 @@ interface PlaybackProgressRepository {
   listHistory(): PlaybackProgress[]
   listResumable(): PlaybackProgress[]
   clear(): void
+  setCompleted?(videoId: string, completed: boolean, updatedAt: number, durationSeconds?: number): PlaybackProgress
 }
 
 interface BaiduCatalogSource {
@@ -119,7 +121,12 @@ type MockBootstrapper = (
   options?: BootstrapMocksOptions
 ) => MockBootstrapData | null
 
-export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath'>
+export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath' | 'dailyEpisodeCount'>
+export interface UpdateDailyUnlockCourseInput {
+  name?: string
+  dailyEpisodeCount?: number
+  paused?: boolean
+}
 
 export type DailyUnlockCourseResult =
   | { ok: true; course: DailyUnlockCourse }
@@ -557,6 +564,8 @@ export function createAppStore(
       const name = typeof input?.name === 'string' ? input.name.trim() : ''
       if (
         !name ||
+        name.length > 160 ||
+        (input.dailyEpisodeCount !== undefined && (!Number.isInteger(input.dailyEpisodeCount) || input.dailyEpisodeCount < 1 || input.dailyEpisodeCount > 10)) ||
         !Array.isArray(input.episodes) ||
         input.episodes.length === 0 ||
         input.episodes.length > 500
@@ -607,6 +616,7 @@ export function createAppStore(
         id,
         name,
         createdAt: dependencies.now(),
+        ...(input.dailyEpisodeCount !== undefined ? { dailyEpisodeCount: input.dailyEpisodeCount } : {}),
         ...(input.sourceFolderPath ? { sourceFolderPath: input.sourceFolderPath } : {}),
         episodes
       }
@@ -622,6 +632,41 @@ export function createAppStore(
       dailyUnlockSettings.value = next
       refreshDailyUnlockClock()
       return { ok: true, course: cloneDailyUnlockCourse(course) }
+    }
+
+    function updateDailyUnlockCourse(courseId: string, patch: UpdateDailyUnlockCourseInput): boolean {
+      const course = dailyUnlockSettings.value.courses.find((item) => item.id === courseId)
+      if (!course || !patch ||
+        (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.trim().length > 160)) ||
+        (patch.dailyEpisodeCount !== undefined && (!Number.isInteger(patch.dailyEpisodeCount) || patch.dailyEpisodeCount < 1 || patch.dailyEpisodeCount > 10)) ||
+        (patch.paused !== undefined && typeof patch.paused !== 'boolean')) return false
+      const updated = rescheduleDailyUnlockCourse(course, patch, dependencies.now())
+      const next = {
+        ...cloneDailyUnlockSettings(dailyUnlockSettings.value),
+        courses: dailyUnlockSettings.value.courses.map((item) => item.id === courseId ? updated : cloneDailyUnlockCourse(item))
+      }
+      try {
+        dependencies.dailyUnlockRepository.save(next)
+      } catch {
+        return false
+      }
+      dailyUnlockSettings.value = next
+      refreshDailyUnlockClock()
+      return true
+    }
+
+    function markVideoLearned(videoId: string, completed: boolean): boolean {
+      const video = mergedVideos.value.find((item) => item.id === videoId)
+      const isCourseVideo = dailyUnlockSettings.value.courses.some((course) => course.episodes.some((episode) => episode.videoId === videoId))
+      if ((!video && !isCourseVideo) || typeof completed !== 'boolean' || !dependencies.progressRepository.setCompleted) return false
+      if (completed && getVideoUnlockStatus(dailyUnlockSettings.value, videoId, dependencies.now()).locked) return false
+      try {
+        dependencies.progressRepository.setCompleted(videoId, completed, dependencies.now(), video?.durationSeconds)
+        reloadProgress()
+        return true
+      } catch {
+        return false
+      }
     }
 
     function deleteDailyUnlockCourse(courseId: string): boolean {
@@ -798,6 +843,8 @@ export function createAppStore(
       refreshDailyUnlockClock,
       setDailyUnlockEnabled,
       createDailyUnlockCourse,
+      updateDailyUnlockCourse,
+      markVideoLearned,
       deleteDailyUnlockCourse,
       continueWatching,
       searchResults,

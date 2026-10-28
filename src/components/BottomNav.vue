@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { CalendarDays, House, SquarePlay, Settings } from '@/components/icons'
+import { House, SquarePlay, Settings } from '@/components/icons'
 
-type NavKey = 'home' | 'library' | 'course' | 'settings'
+type NavKey = 'home' | 'library' | 'settings'
 
 const props = defineProps<{ active: NavKey }>()
 
@@ -12,12 +12,6 @@ const items = [
     label: '视频库',
     path: '/pages/library/index',
     icon: SquarePlay
-  },
-  {
-    key: 'course',
-    label: '每日课程',
-    path: '/pages/daily-unlock/index',
-    icon: CalendarDays
   },
   {
     key: 'settings',
@@ -69,7 +63,7 @@ function navigate(key: NavKey, path: string): void {
   left: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 6rpx 20rpx max(7rpx, env(safe-area-inset-bottom));
   border-top: 1px solid rgba($color-border, 0.8);
   background: rgba($color-surface, 0.98);

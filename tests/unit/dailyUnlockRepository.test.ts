@@ -19,6 +19,16 @@ const validCourse: DailyUnlockCourse = {
 }
 
 describe('DailyUnlockRepository', () => {
+  it('persists scheduling changes and rejects incomplete or invalid schedule fields', () => {
+    const storage = createMemoryStorage()
+    const repository = new DailyUnlockRepository(storage)
+    const course = { ...validCourse, dailyEpisodeCount: 2, pausedAt: validCourse.createdAt, scheduleAnchorAt: validCourse.createdAt, scheduleAnchorUnlockedCount: 2, scheduleAnchorTodayStart: 0 }
+    repository.save({ enabled: true, courses: [course] })
+    expect(repository.load().courses).toEqual([course])
+    expect(() => repository.save({ enabled: true, courses: [{ ...course, dailyEpisodeCount: 0 }] })).toThrow()
+    expect(() => repository.save({ enabled: true, courses: [{ ...course, scheduleAnchorTodayStart: 3 }] })).toThrow()
+    expect(() => repository.save({ enabled: true, courses: [{ ...course, scheduleAnchorAt: undefined }] })).toThrow()
+  })
   it('defaults to disabled with no courses and round-trips valid settings', () => {
     const storage = createMemoryStorage()
     const repository = new DailyUnlockRepository(storage)

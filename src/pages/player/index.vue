@@ -73,7 +73,9 @@ const lockDescription = computed(() => {
   const courseText = current.courseName ? `「${current.courseName}」` : '当前课程'
   return current.unlockAt
     ? `${courseText} ${episodeText} 将于 ${formatLocalUnlockTime(current.unlockAt)} 解锁`
-    : `${courseText} ${episodeText} 已解锁，可以开始播放`
+    : current.locked
+      ? `${courseText} ${episodeText} 暂未开放，课程已暂停，请到设置恢复学习计划`
+      : `${courseText} ${episodeText} 已解锁，可以开始播放`
 })
 
 const savedProgress = computed<PlaybackProgress | null>(() => {

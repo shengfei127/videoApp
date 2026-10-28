@@ -8,6 +8,8 @@ import type { VideoItem } from '@/domain/video'
 import HomePage from '@/pages/home/index.vue'
 import { useAppStore } from '@/stores/appStore'
 
+vi.mock('@dcloudio/uni-app', () => ({ onShow: vi.fn(), onHide: vi.fn(), onUnload: vi.fn() }))
+
 describe('BottomNav', () => {
   it('keeps fixed accessible destinations and redirects only inactive items once', async () => {
     const wrapper = mount(BottomNav, { props: { active: 'home' } })
@@ -15,7 +17,6 @@ describe('BottomNav', () => {
     const destinations = [
       ['首页', '/pages/home/index'],
       ['视频库', '/pages/library/index'],
-      ['每日课程', '/pages/daily-unlock/index'],
       ['设置', '/pages/settings/index']
     ] as const
 
@@ -133,6 +134,81 @@ describe('VideoRow', () => {
 })
 
 describe('Home page', () => {
+  it('continues the most recently watched missed lesson across courses', () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const { wrapper } = mountHome((store) => {
+      store.dailyUnlockNow = now
+      store.baiduVideos = [0, 1].map((index) => ({ id: `baidu:recent-${index}`, sourceId: `recent-${index}`, sourceType: 'baidu', name: `课程${index}`, path: `/课程/${index}.mp4`, durationSeconds: 600 }))
+      store.dailyUnlockSettings = { enabled: true, courses: store.baiduVideos.map((video, index) => ({ id: `course-${index}`, name: video.name, createdAt: new Date(2026, 9, 26).getTime(), episodes: [{ videoId: video.id, name: video.name, sourceType: 'baidu', path: video.path }] })) }
+      store.progressHistory = store.baiduVideos.map((video, index) => ({ videoId: video.id, positionSeconds: 60, durationSeconds: 600, completed: false, updatedAt: now - (1 - index) * 1000 }))
+    })
+    expect(wrapper.get('[data-testid="continue-learning"]').text()).toContain('课程1')
+    expect(wrapper.get('[data-testid="continue-learning"]').text()).not.toContain('课程0')
+    wrapper.unmount()
+  })
+
+  it('keeps missed lessons accessible, avoids duplicate resume rows, and persists completion with undo', async () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const videos: VideoItem[] = Array.from({ length: 4 }, (_, index) => ({ id: `baidu:lesson-${index}`, sourceType: 'baidu', sourceId: `lesson-${index}`, name: `第${index + 1}课`, path: `/课程/第${index + 1}课.mp4`, durationSeconds: 600 }))
+    const { wrapper, store } = mountHome((store) => {
+      store.dailyUnlockNow = now
+      store.baiduVideos = videos
+      store.dailyUnlockSettings = { enabled: true, courses: [{ id: 'plan', name: '学习计划', createdAt: new Date(2026, 9, 26, 12).getTime(), episodes: videos.map((video) => ({ videoId: video.id, name: video.name, sourceType: video.sourceType, path: video.path })) }] }
+      const progress = { videoId: videos[0]!.id, positionSeconds: 120, durationSeconds: 600, completed: false, updatedAt: now }
+      store.progressHistory = [progress]
+      store.resumableProgress = [progress]
+    })
+    expect(wrapper.get('[data-testid="continue-learning"]').text()).toContain('剩余 8 分钟')
+    expect(wrapper.find('.home-resume').exists()).toBe(false)
+    expect(wrapper.findAll('[data-lesson-id="baidu:lesson-0"]')).toHaveLength(1)
+    const backlogButton = wrapper.findAll('button').find((button) => button.text().includes('待补学'))!
+    await backlogButton.trigger('click')
+    expect(wrapper.get('[data-testid="backlog-lessons"]').text()).toContain('第2课')
+    await wrapper.get('[aria-label="标记学完：第3课"]').trigger('click')
+    expect(wrapper.text()).toContain('今日学习已完成')
+    expect(wrapper.text()).toContain('复习本节')
+    expect(store.progressHistory.find((progress) => progress.videoId === videos[2]!.id)?.completed).toBe(true)
+    await wrapper.get('[aria-label="撤销学完：第3课"]').trigger('click')
+    expect(wrapper.find('.home-learning-done').exists()).toBe(false)
+    await wrapper.findAll('button').find((button) => button.text().includes('查看明日安排'))!.trigger('click')
+    expect(wrapper.get('[data-testid="tomorrow-lessons"]').text()).toContain('第4课')
+    expect(wrapper.get('[data-testid="tomorrow-lessons"]').find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows today scheduled lessons, completion, missing sources, and updates after midnight', async () => {
+    const now = new Date(2026, 9, 28, 12).getTime()
+    const video: VideoItem = { id: 'baidu:today', sourceType: 'baidu', sourceId: 'today', name: '今日第一课', path: '/课程/第一课.mp4' }
+    const { wrapper, store } = mountHome((store) => {
+      store.dailyUnlockNow = now
+      store.baiduVideos = [video]
+      store.dailyUnlockSettings = { enabled: true, courses: [{
+        id: 'course-today', name: '每日听力', createdAt: now,
+        episodes: [
+          { videoId: video.id, name: video.name, sourceType: 'baidu' },
+          { videoId: 'baidu:tomorrow', name: '明日第二课', sourceType: 'baidu' }
+        ]
+      }] }
+      store.progressHistory = [{ videoId: video.id, completed: true, positionSeconds: 600, durationSeconds: 600, updatedAt: now }]
+    })
+    const section = wrapper.get('[data-home-section="today"]')
+    expect(section.text()).toContain('每日听力 · 第 1 集')
+    expect(section.text()).toContain('已学完')
+    expect(section.text()).not.toContain('明日第二课')
+    await section.get('button.video-row').trigger('click')
+    expect(uni.navigateTo).toHaveBeenCalledWith({ url: '/pages/player/index?id=baidu%3Atoday' })
+    store.refreshDailyUnlockClock(new Date(2026, 9, 29).getTime())
+    await wrapper.vm.$nextTick()
+    expect(section.text()).toContain('明日第二课')
+    expect(section.text()).toContain('视频暂不可用')
+    expect(section.find('button.video-row').exists()).toBe(false)
+    store.dailyUnlockSettings.enabled = false
+    await wrapper.vm.$nextTick()
+    expect(section.text()).toContain('在设置中开启每日课程')
+    wrapper.unmount()
+  })
+
   it('keeps unseen catalog videos out of recent videos and explains the empty history', () => {
     const video: VideoItem = {
       id: 'baidu:unwatched',
@@ -227,10 +303,10 @@ describe('Home page', () => {
     })
 
     expect(store.continueWatching).toHaveLength(1)
-    const sections = wrapper.findAll('[data-home-section]')
-    expect(sections[0]?.attributes('data-home-section')).toBe('continue')
-    expect(sections[0]?.text()).toContain('接着看')
-    expect(sections[0]?.text()).toContain('06:26')
+    expect(wrapper.get('[data-home-section="today"]').classes()).toContain('home-today--after-resume')
+    const resume = wrapper.get('[data-home-section="continue"]')
+    expect(resume.text()).toContain('接着看')
+    expect(resume.text()).toContain('06:26')
     expect(wrapper.get('.home-resume__eyebrow').text()).toBe('接着看')
     expect(wrapper.get('.home-resume__timestamp').text()).toBe('06:26 / 26:00')
     const progress = wrapper.get('[role="progressbar"]')

@@ -14,6 +14,7 @@ export class ProgressRepository {
     durationSeconds: number,
     updatedAt: number
   ): PlaybackProgress {
+    const previous = this.get(videoId)
     const roundedDuration = Number.isFinite(durationSeconds)
       ? Math.max(0, Math.round(durationSeconds))
       : 0
@@ -30,13 +31,32 @@ export class ProgressRepository {
       positionSeconds: clampedPosition,
       durationSeconds: roundedDuration,
       updatedAt,
-      completed: classification.completed
+      completed: previous?.completed === true || classification.completed,
+      ...(previous?.manualCompleted === true ? { manualCompleted: true } : {})
     }
     const remaining = this.readProgresses().filter(
       (stored) => stored.videoId !== videoId
     )
 
     this.storage.write(PROGRESS_STORAGE_KEY, [...remaining, progress])
+    return progress
+  }
+
+  setCompleted(videoId: string, completed: boolean, updatedAt: number, durationSeconds = 0): PlaybackProgress {
+    if (!videoId.trim() || !Number.isFinite(updatedAt)) throw new Error('学习记录无效')
+    const previous = this.get(videoId)
+    const duration = previous?.durationSeconds || (Number.isFinite(durationSeconds) ? Math.max(0, Math.round(durationSeconds)) : 0)
+    const progress: PlaybackProgress = {
+      videoId,
+      positionSeconds: previous?.positionSeconds ?? 0,
+      durationSeconds: duration,
+      updatedAt,
+      completed,
+      manualCompleted: completed
+    }
+    this.storage.write(PROGRESS_STORAGE_KEY, [
+      ...this.readProgresses().filter((stored) => stored.videoId !== videoId), progress
+    ])
     return progress
   }
 
@@ -52,7 +72,7 @@ export class ProgressRepository {
 
   listResumable(): PlaybackProgress[] {
     return this.listHistory().filter((progress) =>
-      classifyProgress(progress.positionSeconds, progress.durationSeconds).resumable
+      !progress.completed && classifyProgress(progress.positionSeconds, progress.durationSeconds).resumable
     )
   }
 
@@ -91,7 +111,7 @@ function isPlaybackProgress(value: unknown): value is PlaybackProgress {
     progress.positionSeconds >= 0 &&
     typeof progress.durationSeconds === 'number' &&
     Number.isFinite(progress.durationSeconds) &&
-    progress.durationSeconds > 0 &&
+    (progress.durationSeconds > 0 || (progress.durationSeconds === 0 && typeof progress.manualCompleted === 'boolean')) &&
     progress.positionSeconds <= progress.durationSeconds &&
     typeof progress.updatedAt === 'number' &&
     Number.isFinite(progress.updatedAt) &&

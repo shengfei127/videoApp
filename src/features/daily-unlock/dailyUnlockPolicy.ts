@@ -47,12 +47,62 @@ export function getUnlockedEpisodeCount(
     return 0
   }
 
-  const createdDay = localDayOrdinal(course.createdAt)
-  const currentDay = localDayOrdinal(now)
+  const effectiveNow = course.pausedAt === undefined ? now : Math.min(now, course.pausedAt)
+  const createdDay = localDayOrdinal(course.scheduleAnchorAt ?? course.createdAt)
+  const currentDay = localDayOrdinal(effectiveNow)
+  const elapsedDays = currentDay - createdDay
+  const count = course.scheduleAnchorAt === undefined
+    ? Math.max(0, elapsedDays + 1) * dailyRate(course)
+    : (course.scheduleAnchorUnlockedCount ?? 0) + Math.max(0, elapsedDays) * dailyRate(course)
   return Math.min(
     course.episodes.length,
-    Math.max(0, currentDay - createdDay + 1)
+    Math.max(0, count)
   )
+}
+
+export function getTodayCourseEpisode(course: DailyUnlockCourse, now: number): DailyUnlockEpisode | undefined {
+  return getTodayCourseEpisodes(course, now)[0]
+}
+
+export function getTodayCourseEpisodes(course: DailyUnlockCourse, now: number): DailyUnlockEpisode[] {
+  if (course.pausedAt !== undefined || !Number.isFinite(now) || now < course.createdAt) return []
+  const end = getUnlockedEpisodeCount(course, now)
+  const start = course.scheduleAnchorAt !== undefined && localDayOrdinal(now) === localDayOrdinal(course.scheduleAnchorAt)
+    ? course.scheduleAnchorTodayStart ?? end
+    : getUnlockedEpisodeCount(course, localMidnightAfter(now, 0) - 1)
+  return course.episodes.slice(start, end)
+}
+
+export function rescheduleDailyUnlockCourse(
+  course: DailyUnlockCourse,
+  patch: { name?: string; dailyEpisodeCount?: number; paused?: boolean },
+  now: number
+): DailyUnlockCourse {
+  const next = { ...course, ...(patch.name !== undefined ? { name: patch.name.trim() } : {}) }
+  const rateChanged = patch.dailyEpisodeCount !== undefined && patch.dailyEpisodeCount !== dailyRate(course)
+  const pauseChanged = patch.paused !== undefined && patch.paused !== (course.pausedAt !== undefined)
+  if (!rateChanged && !pauseChanged) return next
+  const unlocked = getUnlockedEpisodeCount(course, now)
+  const today = getTodayCourseEpisodes(course, now)
+  next.scheduleAnchorAt = now
+  next.scheduleAnchorUnlockedCount = unlocked
+  next.scheduleAnchorTodayStart = unlocked - today.length
+  next.dailyEpisodeCount = patch.dailyEpisodeCount ?? dailyRate(course)
+  if (patch.paused === true || (patch.paused === undefined && course.pausedAt !== undefined)) next.pausedAt = now
+  else delete next.pausedAt
+  return next
+}
+
+function dailyRate(course: DailyUnlockCourse): number {
+  return course.dailyEpisodeCount ?? 1
+}
+
+function episodeUnlockAt(course: DailyUnlockCourse, index: number): number {
+  if (course.scheduleAnchorAt !== undefined) {
+    const remainingIndex = index - (course.scheduleAnchorUnlockedCount ?? 0)
+    return localMidnightAfter(course.scheduleAnchorAt, Math.floor(remainingIndex / dailyRate(course)) + 1)
+  }
+  return localMidnightAfter(course.createdAt, Math.floor(index / dailyRate(course)))
 }
 
 export function getVideoUnlockStatus(
@@ -76,8 +126,8 @@ export function getVideoUnlockStatus(
     courseName: course.name,
     episodeNumber,
     unlockedCount,
-    ...(episodeNumber > unlockedCount
-      ? { unlockAt: localMidnightAfter(course.createdAt, index) }
+    ...(episodeNumber > unlockedCount && course.pausedAt === undefined
+      ? { unlockAt: episodeUnlockAt(course, index) }
       : {})
   }
 }
@@ -87,10 +137,10 @@ export function getNextCourseUnlockAt(
   now: number
 ): number | undefined {
   const unlockedCount = getUnlockedEpisodeCount(course, now)
-  if (unlockedCount >= course.episodes.length) {
+  if (unlockedCount >= course.episodes.length || course.pausedAt !== undefined) {
     return undefined
   }
-  return localMidnightAfter(course.createdAt, unlockedCount)
+  return episodeUnlockAt(course, unlockedCount)
 }
 
 export function sortCourseEpisodes<T extends Pick<VideoItem, 'id' | 'name' | 'path'>>(

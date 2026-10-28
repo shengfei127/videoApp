@@ -650,6 +650,58 @@ describe('app store sync state transitions', () => {
 })
 
 describe('app store daily unlock settings', () => {
+  it('updates course rate and pauses without relocking released lessons', async () => {
+    const context = createTestContext('edit-course')
+    await context.store.initialize()
+    const result = context.store.createDailyUnlockCourse({
+      name: '课程', dailyEpisodeCount: 2,
+      episodes: Array.from({ length: 8 }, (_, i) => ({ videoId: `direct:${i}`, name: `第${i + 1}课`, sourceType: 'direct' as const }))
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    context.store.setDailyUnlockEnabled(true)
+    expect(context.store.videoUnlockStatus('direct:1').locked).toBe(false)
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { name: '新课程', dailyEpisodeCount: 1 })).toBe(true)
+    expect(context.store.videoUnlockStatus('direct:1').locked).toBe(false)
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { paused: true })).toBe(true)
+    context.advance(3 * 86_400_000)
+    context.store.refreshDailyUnlockClock()
+    expect(context.store.videoUnlockStatus('direct:2').locked).toBe(true)
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { paused: false })).toBe(true)
+    expect(context.store.videoUnlockStatus('direct:2').locked).toBe(true)
+    context.advance(86_400_000)
+    context.store.refreshDailyUnlockClock()
+    expect(context.store.videoUnlockStatus('direct:2').locked).toBe(false)
+    expect(context.store.videoUnlockStatus('direct:3').locked).toBe(true)
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]).toMatchObject({ name: '新课程', dailyEpisodeCount: 1 })
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { dailyEpisodeCount: 0 })).toBe(false)
+    const confirmed = JSON.parse(JSON.stringify(context.store.dailyUnlockSettings))
+    vi.spyOn(context.storage, 'write').mockImplementation(() => { throw new Error('storage') })
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { name: '不能保存' })).toBe(false)
+    expect(context.store.dailyUnlockSettings).toEqual(confirmed)
+  })
+
+  it('manually completes and restores a learned lesson with durable progress', async () => {
+    const context = createTestContext('manual-completion')
+    await context.store.initialize()
+    context.store.createDailyUnlockCourse({ name: '课程', episodes: [
+      { videoId: 'direct:first', name: '第一课', sourceType: 'direct' },
+      { videoId: 'direct:locked', name: '第二课', sourceType: 'direct' }
+    ] })
+    context.store.setDailyUnlockEnabled(true)
+    expect(context.store.markVideoLearned('direct:locked', true)).toBe(false)
+    expect(context.store.markVideoLearned('missing', true)).toBe(false)
+    expect(context.store.markVideoLearned('direct:first', true)).toBe(true)
+    expect(context.store.progressHistory[0]).toMatchObject({ videoId: 'direct:first', completed: true, durationSeconds: 0 })
+    expect(context.progressRepository.get('direct:first')?.completed).toBe(true)
+    expect(context.store.markVideoLearned('direct:first', false)).toBe(true)
+    expect(context.store.progressHistory[0]?.completed).toBe(false)
+    const previous = structuredClone(context.progressRepository.listHistory())
+    vi.spyOn(context.progressRepository, 'setCompleted').mockImplementation(() => { throw new Error('storage') })
+    expect(context.store.markVideoLearned('direct:first', true)).toBe(false)
+    expect(context.store.progressHistory).toEqual(previous)
+  })
+
   it('restores courses after restart and keeps them through cache and history clearing', async () => {
     const context = createTestContext('daily-unlock-restart')
     await context.store.initialize()

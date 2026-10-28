@@ -8,12 +8,45 @@ import VideoThumbnail from '@/components/VideoThumbnail.vue'
 import type { VideoItem } from '@/domain/video'
 import type { ContinueWatchingItem } from '@/stores/appStore'
 import { useAppStore } from '@/stores/appStore'
+import LearningLessonCard from '@/components/LearningLessonCard.vue'
+import { buildLearningPlan, type LearningLesson } from '@/features/daily-unlock/learningPlan'
+import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
 
 const store = useAppStore()
+useDailyUnlockClock((now) => store.refreshDailyUnlockClock(now))
+const backlogOpen = ref(false)
+const tomorrowOpen = ref(false)
+const plan = computed(() => buildLearningPlan(store.dailyUnlockSettings, store.dailyUnlockNow, store.mergedVideos, store.progressHistory))
+const todayLessons = computed(() => plan.value.today)
+const continuingBacklog = computed(() => {
+  const updatedAt = new Map(store.progressHistory.map((progress) => [progress.videoId, progress.updatedAt]))
+  return plan.value.backlog.filter((lesson) => lesson.positionSeconds > 0 && lesson.video)
+    .sort((a, b) => (updatedAt.get(b.id) ?? 0) - (updatedAt.get(a.id) ?? 0))[0]
+})
+const remainingBacklog = computed(() => plan.value.backlog.filter((lesson) => lesson.id !== continuingBacklog.value?.id))
+const todayComplete = computed(() => todayLessons.value.length > 0 && todayLessons.value.every((lesson) => lesson.completed))
+const todaySummary = computed(() => {
+  const pending = todayLessons.value.filter((lesson) => !lesson.completed)
+  const known = pending.filter((lesson) => lesson.remainingSeconds !== undefined)
+  const minutes = Math.ceil(known.reduce((total, lesson) => total + (lesson.remainingSeconds ?? 0), 0) / 60)
+  return `${todayLessons.value.filter((lesson) => lesson.completed).length} / ${todayLessons.value.length} 节已学完${minutes ? ` · ${known.length < pending.length ? '已知' : '剩余'}约 ${minutes} 分钟` : ''}${known.length < pending.length ? ' · 部分时长待获取' : ''}`
+})
+const learningIds = computed(() => new Set([...plan.value.today, ...plan.value.backlog].map((lesson) => lesson.id)))
+const todayEmptyText = computed(() => !store.dailyUnlockSettings.enabled
+  ? '在设置中开启每日课程，安排每天的学习内容'
+  : store.dailyUnlockSettings.courses.length === 0
+    ? '还没有学习计划，去设置中添加每日课程'
+    : store.dailyUnlockSettings.courses.every((course) => course.pausedAt !== undefined)
+      ? '学习计划已暂停，可在设置中恢复；已开放内容仍可补学'
+      : '今天没有新课程，可前往视频库复习已学内容')
+function markLearned(lesson: LearningLesson): void {
+  const saved = store.markVideoLearned(lesson.id, !lesson.completed)
+  uni.showToast({ title: saved ? lesson.completed ? '已撤销学完' : '已标记学完' : '保存失败，请稍后重试', icon: 'none' })
+}
 
 const resumeItems = computed<ContinueWatchingItem[]>(() => {
   const items = store.continueWatching
-  return Array.isArray(items) ? items.slice(0, 3) : []
+  return Array.isArray(items) ? items.filter((item) => !learningIds.value.has(item.video.id)).slice(0, 3) : []
 })
 const activeResumeIndex = ref(0)
 const continueItem = computed<ContinueWatchingItem | undefined>(() =>
@@ -21,7 +54,7 @@ const continueItem = computed<ContinueWatchingItem | undefined>(() =>
 )
 const recentVideos = computed<VideoItem[]>(() => {
   const items = store.recentVideos
-  return Array.isArray(items) ? items.slice(0, 6) : []
+  return Array.isArray(items) ? items.filter((video) => !learningIds.value.has(video.id) && !resumeItems.value.some((item) => item.video.id === video.id)).slice(0, 6) : []
 })
 const resumeTimestamp = computed(() =>
   formatTimestamp(continueItem.value?.progress.positionSeconds)
@@ -121,6 +154,42 @@ function padTime(value: number): string {
 
     <view v-if="safeLastErrorText" class="home-error-band" role="status" aria-live="polite">{{ safeLastErrorText }}</view>
 
+    <view class="home-section home-today" :class="{ 'home-today--after-resume': !store.dailyUnlockSettings.enabled && continueItem }" data-home-section="today" role="region" aria-labelledby="today-learning-title">
+      <view class="home-section-heading">
+        <text id="today-learning-title" class="section-title" role="heading" aria-level="2">今日学习</text>
+        <button class="home-learning-link" @click="openSource('/pages/settings/index')">学习设置</button>
+      </view>
+      <text v-if="todayLessons.length" class="home-today__summary">{{ todaySummary }}</text>
+      <view v-if="continuingBacklog" class="home-learning-extra" data-testid="continue-learning">
+        <text class="home-today__summary">接着上次的内容继续学习</text>
+        <LearningLessonCard :lesson="continuingBacklog" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+      </view>
+      <view v-if="todayComplete" class="home-learning-done" role="status">
+        <text>今日学习已完成</text><text>今天的安排已经学完，随时可以回来复习。</text>
+      </view>
+      <view v-if="todayLessons.length" class="home-today__list">
+        <LearningLessonCard v-for="lesson in todayLessons" :key="lesson.id" :lesson="lesson" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+      </view>
+      <view v-else class="home-empty-band" role="status">
+        <text>{{ todayEmptyText }}</text>
+        <button class="home-learning-action" @click="openSource('/pages/settings/index')">设置学习计划</button>
+      </view>
+      <view v-if="remainingBacklog.length" class="home-learning-extra">
+        <button class="home-learning-disclosure" :aria-expanded="backlogOpen" @click="backlogOpen = !backlogOpen">待补学 · 还有 {{ remainingBacklog.length }} 节未完成 <text>{{ backlogOpen ? '收起' : '展开' }}</text></button>
+        <text class="home-today__summary">按自己的节奏补学，不影响今天的课程</text>
+        <view v-if="backlogOpen" data-testid="backlog-lessons">
+          <LearningLessonCard v-for="lesson in remainingBacklog" :key="lesson.id" :lesson="lesson" @play="openPlayer" @complete="markLearned" @library="openSource('/pages/library/index')" />
+        </view>
+      </view>
+      <view v-if="store.dailyUnlockSettings.enabled && store.dailyUnlockSettings.courses.length" class="home-learning-extra">
+        <button class="home-learning-disclosure" :aria-expanded="tomorrowOpen" @click="tomorrowOpen = !tomorrowOpen">查看明日安排 <text>{{ tomorrowOpen ? '收起' : '展开' }}</text></button>
+        <view v-if="tomorrowOpen" data-testid="tomorrow-lessons">
+          <view v-for="lesson in plan.tomorrow" :key="lesson.id" class="home-tomorrow-row"><text>{{ lesson.courseName }} · 第 {{ lesson.episodeNumber }} 集</text><text>{{ lesson.name }}</text></view>
+          <text v-if="!plan.tomorrow.length" class="home-today__summary">明天暂无新课程安排，可复习或继续补学。</text>
+        </view>
+      </view>
+    </view>
+
     <view v-if="continueItem" class="home-section home-resume-section" data-home-section="continue" role="region" aria-label="接着看">
       <button class="home-resume home-resume--hero" :aria-label="`继续播放：${safeVideoName(continueItem.video)}`" @click="openPlayer(continueItem.video)">
         <view class="home-resume__thumbnail">
@@ -161,6 +230,8 @@ function padTime(value: number): string {
 @use '@/styles/tokens.scss' as *;
 
 .home-page {
+  display: flex;
+  flex-direction: column;
   overflow-x: hidden;
   padding-top: calc(max(var(--status-bar-height, 0px), env(safe-area-inset-top, 0px)) + 16rpx);
 }
@@ -223,6 +294,23 @@ function padTime(value: number): string {
 }
 
 .home-section { min-width: 0; }
+.home-header { order: 0; }
+.home-error-band { order: 1; }
+.home-today { order: 2; }
+.home-resume-section { order: 3; }
+.home-today--after-resume { order: 4; }
+.home-recent { order: 5; }
+.home-today__summary { display: block; color: $color-muted; font-size: 22rpx; line-height: 1.5; margin-bottom: 14rpx; }
+.home-learning-link, .home-learning-action { margin: 0; padding: 12rpx 16rpx; border: 0; border-radius: 8px; background: $color-primary-soft; color: $color-primary; font-size: 22rpx; line-height: 1.4; }
+.home-learning-action { margin: 16rpx auto 0; width: fit-content; }
+.home-learning-done { display: flex; flex-direction: column; padding: 20rpx; margin-bottom: 14rpx; border-radius: 12px; background: $color-primary-soft; color: $color-primary; font-size: 26rpx; font-weight: 650; }
+.home-learning-done text + text { margin-top: 8rpx; font-size: 22rpx; font-weight: 400; }
+.home-learning-extra { margin-top: 18rpx; }
+.home-learning-disclosure { width: 100%; display: flex; justify-content: space-between; padding: 18rpx 0; margin: 0; background: transparent; color: $color-primary; border: 0; text-align: left; font-size: 24rpx; line-height: 1.5; }
+.home-learning-disclosure > * { margin-left: 12rpx; }
+.home-tomorrow-row > * + * { margin-top: 6rpx; }
+.home-tomorrow-row { display: flex; flex-direction: column; padding: 16rpx; margin-bottom: 10rpx; border-radius: 8px; background: $color-primary-soft; color: $color-text; font-size: 22rpx; overflow-wrap: anywhere; }
+
 
 .section-title {
   margin: 28rpx 0 14rpx;

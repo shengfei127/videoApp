@@ -5,6 +5,42 @@ import { ProgressRepository, PROGRESS_STORAGE_KEY } from '@/features/playback/pr
 import { createMemoryStorage, uniStorage } from '@/infrastructure/storage'
 
 describe('ProgressRepository', () => {
+  it('retains automatically completed learning during review until explicitly undone', () => {
+    const repository = new ProgressRepository(createMemoryStorage())
+    repository.save('lesson', 600, 600, 1000)
+    repository.save('lesson', 40, 600, 2000)
+    expect(repository.get('lesson')).toMatchObject({ completed: true, positionSeconds: 40 })
+    expect(repository.listResumable()).toEqual([])
+    repository.setCompleted('lesson', false, 3000)
+    repository.save('lesson', 120, 600, 4000)
+    expect(repository.get('lesson')).toMatchObject({ completed: false, positionSeconds: 120 })
+    expect(repository.listResumable()).toHaveLength(1)
+    repository.save('lesson', 600, 600, 5000)
+    expect(repository.get('lesson')?.completed).toBe(true)
+  })
+
+  it('persists manual completion without inventing duration and supports undo', () => {
+    const storage = createMemoryStorage()
+    const repository = new ProgressRepository(storage)
+    repository.setCompleted('unknown-duration', true, 1000)
+    expect(new ProgressRepository(storage).get('unknown-duration')).toMatchObject({ completed: true, manualCompleted: true, durationSeconds: 0, positionSeconds: 0 })
+    expect(repository.listResumable()).toEqual([])
+    repository.setCompleted('unknown-duration', false, 2000)
+    expect(repository.get('unknown-duration')).toMatchObject({ completed: false, durationSeconds: 0 })
+  })
+
+  it('preserves actual position on completion, excludes learned video from resume, and retains completion on review', () => {
+    const repository = new ProgressRepository(createMemoryStorage())
+    repository.save('lesson', 120, 600, 1000)
+    repository.setCompleted('lesson', true, 2000)
+    expect(repository.get('lesson')).toMatchObject({ positionSeconds: 120, durationSeconds: 600, completed: true })
+    expect(repository.listResumable()).toEqual([])
+    repository.save('lesson', 180, 600, 3000)
+    expect(repository.get('lesson')).toMatchObject({ completed: true, positionSeconds: 180 })
+    repository.setCompleted('lesson', false, 4000)
+    expect(repository.listResumable()).toHaveLength(1)
+  })
+
   it('keeps completed progress in history but excludes it from resumable results', () => {
     const repository = new ProgressRepository(createMemoryStorage())
 
