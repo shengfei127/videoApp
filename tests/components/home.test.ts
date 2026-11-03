@@ -134,6 +134,45 @@ describe('VideoRow', () => {
 })
 
 describe('Home page', () => {
+  it('shows the nearest unpaused course start date and releases its first lesson only on that day', async () => {
+    const now = new Date(2026, 10, 3, 12).getTime()
+    const { wrapper, store } = mountHome((store) => {
+      store.dailyUnlockNow = now
+      store.dailyUnlockSettings = { enabled: true, courses: [
+        { id: 'later', name: '稍晚的课程', createdAt: now, startAt: new Date(2026, 10, 8).getTime(), episodes: [{ videoId: 'direct:later', name: '稍晚第一课', sourceType: 'direct' }] },
+        { id: 'paused', name: '暂停的课程', createdAt: now, startAt: new Date(2026, 10, 4).getTime(), pausedAt: now, episodes: [{ videoId: 'direct:paused', name: '暂停第一课', sourceType: 'direct' }] },
+        { id: 'soon', name: '即将开始的课程', createdAt: now, startAt: new Date(2026, 10, 5).getTime(), episodes: [{ videoId: 'direct:soon', name: '新课第一节', sourceType: 'direct' }] }
+      ] }
+    })
+    await wrapper.vm.$nextTick()
+    const today = wrapper.get('[data-home-section="today"]')
+    expect(today.text()).toContain('最近的课程将于 2026-11-05 开始')
+    expect(wrapper.findAll('.learning-lesson')).toHaveLength(0)
+    expect(wrapper.findAll('[data-backlog-course]')).toHaveLength(0)
+    expect(today.text()).not.toContain('今日学习已完成')
+    store.refreshDailyUnlockClock(new Date(2026, 10, 5).getTime())
+    await wrapper.vm.$nextTick()
+    expect(today.text()).toContain('即将开始的课程 · 第 1 集')
+    expect(today.text()).not.toContain('最近的课程将于')
+    wrapper.unmount()
+  })
+
+  it('keeps paused and disabled messages ahead of future-course dates', async () => {
+    const now = new Date(2026, 10, 3, 12).getTime()
+    const { wrapper, store } = mountHome((store) => {
+      store.dailyUnlockNow = now
+      store.dailyUnlockSettings = { enabled: true, courses: [{ id: 'future', name: '未来课程', createdAt: now, startAt: new Date(2026, 10, 8).getTime(), pausedAt: now, episodes: [{ videoId: 'direct:future', name: '第一课', sourceType: 'direct' }] }] }
+    })
+    await wrapper.vm.$nextTick()
+    const today = wrapper.get('[data-home-section="today"]')
+    expect(today.text()).toContain('学习计划已暂停')
+    expect(today.text()).not.toContain('最近的课程将于')
+    store.dailyUnlockSettings.enabled = false
+    await wrapper.vm.$nextTick()
+    expect(today.text()).toContain('在设置中开启每日课程')
+    wrapper.unmount()
+  })
+
   it('renders missed lessons in small batches and resets the batch after collapsing', async () => {
     const { wrapper } = mountHome((store) => {
       store.dailyUnlockNow = new Date(2026, 9, 28).getTime()

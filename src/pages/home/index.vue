@@ -13,6 +13,7 @@ import { useAppStore } from '@/stores/appStore'
 import LearningLessonCard from '@/components/LearningLessonCard.vue'
 import { buildLearningPlan, type LearningLesson } from '@/features/daily-unlock/learningPlan'
 import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
+import { formatCourseDate, getCourseStartAt, hasCourseStarted } from '@/features/daily-unlock/courseScheduleDate'
 
 const store = useAppStore()
 useDailyUnlockClock((now) => store.refreshDailyUnlockClock(now))
@@ -63,13 +64,21 @@ const todaySummary = computed(() => {
   return `${todayLessons.value.filter((lesson) => lesson.completed).length} / ${todayLessons.value.length} 节已学完${minutes ? ` · ${known.length < pending.length ? '已知' : '剩余'}约 ${minutes} 分钟` : ''}${known.length < pending.length ? ' · 部分时长待获取' : ''}`
 })
 const learningIds = computed(() => new Set([...plan.value.today, ...plan.value.backlog].map((lesson) => lesson.id)))
+const nextCourseStart = computed(() => {
+  const upcoming = store.dailyUnlockSettings.courses
+    .filter((course) => course.pausedAt === undefined && !hasCourseStarted(course, store.dailyUnlockNow))
+    .map(getCourseStartAt)
+  return upcoming.length ? Math.min(...upcoming) : undefined
+})
 const todayEmptyText = computed(() => !store.dailyUnlockSettings.enabled
   ? '在设置中开启每日课程，安排每天的学习内容'
   : store.dailyUnlockSettings.courses.length === 0
     ? '还没有学习计划，去设置中添加每日课程'
     : store.dailyUnlockSettings.courses.every((course) => course.pausedAt !== undefined)
       ? '学习计划已暂停，可在设置中恢复；已开放内容仍可补学'
-      : '今天没有新课程，可前往视频库复习已学内容')
+      : nextCourseStart.value !== undefined
+        ? `最近的课程将于 ${formatCourseDate(nextCourseStart.value)} 开始，今天暂无新课`
+        : '今天没有新课程，可前往视频库复习已学内容')
 function markLearned(lesson: LearningLesson): void {
   const isBacklog = plan.value.backlog.some((item) => item.id === lesson.id)
   const saved = store.markVideoLearned(lesson.id, !lesson.completed)

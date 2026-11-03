@@ -12,6 +12,78 @@ const lifecycle = vi.hoisted(() => ({ onLoad: vi.fn(), onHide: vi.fn(), onUnload
 vi.mock('@dcloudio/uni-app', () => ({ onLoad: lifecycle.onLoad, onShow: vi.fn(), onHide: lifecycle.onHide, onUnload: lifecycle.onUnload }))
 
 describe('DailyUnlock page', () => {
+  it('previews the chosen start date and persists a future course without opening it today', async () => {
+    const { wrapper, store } = mountDailyUnlock(store => {
+      store.baiduVideos = [video('1', '第1集', '/apps/片刻/课/1'), video('2', '第2集', '/apps/片刻/课/2')]
+    })
+    await wrapper.get('[data-folder-path="/apps/片刻/课"]').trigger('click')
+    await wrapper.get('[data-testid="course-start-date"]').trigger('change', { detail: { value: '2026-10-30' } })
+    expect(wrapper.get('[data-testid="schedule-preview"]').text()).toContain('2026-10-30：第1集')
+    expect(wrapper.get('[data-testid="schedule-preview"]').text()).toContain('2026-10-31：第2集')
+    await wrapper.get('[data-testid="create-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.startAt).toBe(new Date(2026, 9, 30).getTime())
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('未开始')
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('已开放 0 / 2 集')
+    await wrapper.get('[data-course-filter="scheduled"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="course-card"]')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('restores the selected date from a draft and requires a new date when it has passed', async () => {
+    const configure = (store: ReturnType<typeof useAppStore>) => { store.baiduVideos = [video('1', '第一集', '/apps/片刻/课/1')] }
+    const first = mountDailyUnlock(configure)
+    await first.wrapper.get('[data-folder-path="/apps/片刻/课"]').trigger('click')
+    await first.wrapper.get('[data-testid="course-start-date"]').trigger('change', { detail: { value: '2026-10-28' } })
+    first.wrapper.unmount()
+    vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 9, 29, 12).getTime())
+    const second = mountDailyUnlock(configure)
+    await second.wrapper.get('[data-testid="restore-draft"]').trigger('click')
+    expect(second.wrapper.get('[data-testid="course-start-date"]').attributes('value')).toBe('2026-10-28')
+    await second.wrapper.get('[data-testid="create-course"]').trigger('click')
+    expect(second.store.dailyUnlockSettings.courses).toHaveLength(0)
+    expect(second.wrapper.get('[role="alert"]').text()).toContain('开始日期')
+    await second.wrapper.get('[data-testid="course-start-date"]').trigger('change', { detail: { value: '2026-10-30' } })
+    await second.wrapper.get('[data-testid="create-course"]').trigger('click')
+    expect(second.store.dailyUnlockSettings.courses[0]?.startAt).toBe(new Date(2026, 9, 30).getTime())
+    second.wrapper.unmount()
+  })
+
+  it('lets an unstarted course change its start date while preserving a failed edit for retry', async () => {
+    const { wrapper, store } = mountDailyUnlock(store => {
+      store.dailyUnlockSettings.courses = [{ id: 'future', name: '未来课', createdAt: Date.now(), startAt: new Date(2026, 9, 30).getTime(), episodes: [{ videoId: 'direct:1', name: '第一集', sourceType: 'direct' }] }]
+    })
+    await wrapper.get('[data-testid="course-more"]').trigger('click')
+    await wrapper.get('[data-testid="edit-course"]').trigger('click')
+    await wrapper.get('[data-testid="edit-course-start-date"]').trigger('change', { detail: { value: '2026-11-01' } })
+    vi.spyOn(store, 'updateDailyUnlockCourse').mockReturnValueOnce(false)
+    await wrapper.get('[data-testid="save-course"]').trigger('click')
+    expect(wrapper.get('[data-testid="course-edit"]').text()).toContain('保存失败')
+    expect(store.dailyUnlockSettings.courses[0]?.startAt).toBe(new Date(2026, 9, 30).getTime())
+    await wrapper.get('[data-testid="save-course"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.startAt).toBe(new Date(2026, 10, 1).getTime())
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('2026-11-01')
+    wrapper.unmount()
+  })
+
+  it('previews the first lesson when resuming a course paused before its start date', async () => {
+    const { wrapper, store } = mountDailyUnlock(store => {
+      store.dailyUnlockSettings.courses = [{ id: 'future', name: '未来课', createdAt: Date.now(), startAt: new Date(2026, 9, 30).getTime(), episodes: [{ videoId: 'direct:1', name: '第一集', sourceType: 'direct' }, { videoId: 'direct:2', name: '第二集', sourceType: 'direct' }] }]
+    })
+    await wrapper.get('[data-testid="pause-course"]').trigger('click')
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('已暂停')
+    await wrapper.get('[data-testid="pause-course"]').trigger('click')
+    expect(wrapper.get('[data-testid="resume-preview"]').text()).toContain('2026-10-30')
+    await wrapper.get('[data-testid="resume-cancel"]').trigger('click')
+    vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 10, 2, 12).getTime())
+    await wrapper.get('[data-testid="pause-course"]').trigger('click')
+    expect(wrapper.get('[data-testid="resume-preview"]').text()).toContain('今天可学未完成：1 集')
+    expect(wrapper.get('[data-testid="resume-preview"]').text()).toContain('明天新开放：1 集')
+    await wrapper.get('[data-testid="resume-confirm"]').trigger('click')
+    expect(store.dailyUnlockSettings.courses[0]?.startAt).toBe(new Date(2026, 10, 2).getTime())
+    expect(wrapper.get('[data-testid="course-card"]').text()).toContain('已开放 1 / 2 集')
+    wrapper.unmount()
+  })
+
   it.each(['folder', 'videos'] as const)('keeps an episode visible when moving beyond the preview batch in %s mode', async (selectionMode) => {
     const videos = Array.from({ length: 60 }, (_, index) => video(String(index + 1), `第${index + 1}集`, `/apps/片刻/课/${index + 1}`))
     uniStorage.write('pianke:course-draft:v1', { name: '顺序', selectionMode, sourceFolderPath: '/apps/片刻/课', dailyEpisodeCount: 1, startEpisodeNumber: 1, episodes: videos.map(item => ({ videoId: item.id, name: item.name, sourceType: item.sourceType, path: item.path })) })
@@ -646,6 +718,7 @@ function mountDailyUnlock(configure?: (store: ReturnType<typeof useAppStore>) =>
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useAppStore(pinia)
+  store.refreshDailyUnlockClock(Date.now())
   configure?.(store)
   return {
     store,

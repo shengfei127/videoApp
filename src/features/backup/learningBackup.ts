@@ -63,7 +63,7 @@ function validateCourses(value: unknown): DailyUnlockSettings {
   onlyKeys(value, ['enabled', 'courses'])
   for (const course of value.courses) {
     if (!record(course) || !Array.isArray(course.episodes) || !validId(course.id)) invalid()
-    onlyKeys(course, ['id', 'name', 'createdAt', 'sourceFolderPath', 'episodes', 'dailyEpisodeCount', 'startEpisodeNumber', 'pausedAt', 'scheduleAnchorAt', 'scheduleAnchorUnlockedCount', 'scheduleAnchorTodayStart'])
+    onlyKeys(course, ['id', 'name', 'createdAt', 'startAt', 'sourceFolderPath', 'episodes', 'dailyEpisodeCount', 'startEpisodeNumber', 'pausedAt', 'scheduleAnchorAt', 'scheduleAnchorUnlockedCount', 'scheduleAnchorTodayStart'])
     for (const episode of course.episodes) {
       if (!record(episode) || !validId(episode.videoId)) invalid()
       onlyKeys(episode, ['videoId', 'name', 'sourceType', 'path'])

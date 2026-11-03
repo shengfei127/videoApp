@@ -13,6 +13,20 @@ const draft: CourseDraft = {
 }
 
 describe('course drafts', () => {
+  it.each(['2026-11-15', '2024-02-29', '2020-01-01'])('preserves a valid chosen start date, including past dates for explicit review: %s', (startDate) => {
+    const storage = createMemoryStorage()
+    const datedDraft = { ...draft, startDate }
+    saveCourseDraft(storage, datedDraft)
+    expect(readCourseDraft(storage)).toEqual(datedDraft)
+  })
+
+  it.each(['2026-02-29', '2026-11-31', '2026-13-01', '2026-00-01', '2026-11-00', '2026-1-1', '2026-11-03T00:00:00Z', '', null, 1793664000000])('rejects malformed start dates instead of silently replacing them: %s', (startDate) => {
+    const storage = createMemoryStorage()
+    storage.write(COURSE_DRAFT_KEY, { ...draft, startDate })
+    expect(readCourseDraft(storage)).toBeUndefined()
+    expect(() => saveCourseDraft(storage, { ...draft, startDate } as CourseDraft)).toThrow('课程草稿信息无效')
+  })
+
   it('coalesces writes, flushes the latest state immediately, and cancels obsolete saves', () => {
     vi.useFakeTimers()
     try {

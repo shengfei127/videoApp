@@ -72,6 +72,7 @@ function sanitizeCourse(value: unknown): DailyUnlockCourse | null {
 
   if (value.dailyEpisodeCount !== undefined && (!Number.isInteger(value.dailyEpisodeCount) || Number(value.dailyEpisodeCount) < 1 || Number(value.dailyEpisodeCount) > 10)) return null
   if (value.startEpisodeNumber !== undefined && (!Number.isInteger(value.startEpisodeNumber) || Number(value.startEpisodeNumber) < 1 || Number(value.startEpisodeNumber) > value.episodes.length)) return null
+  if (value.startAt !== undefined && !isTimestamp(value.startAt)) return null
   if (value.pausedAt !== undefined && !isTimestamp(value.pausedAt)) return null
   const anchorFields = [value.scheduleAnchorAt, value.scheduleAnchorUnlockedCount, value.scheduleAnchorTodayStart]
   if (anchorFields.some((field) => field !== undefined)) {
@@ -92,6 +93,7 @@ function sanitizeCourse(value: unknown): DailyUnlockCourse | null {
     id: value.id,
     name: value.name.trim(),
     createdAt: value.createdAt as number,
+    ...(value.startAt !== undefined ? { startAt: value.startAt as number } : {}),
     ...(value.dailyEpisodeCount !== undefined ? { dailyEpisodeCount: value.dailyEpisodeCount as number } : {}),
     ...(value.startEpisodeNumber !== undefined ? { startEpisodeNumber: value.startEpisodeNumber as number } : {}),
     ...(value.pausedAt !== undefined ? { pausedAt: value.pausedAt as number } : {}),

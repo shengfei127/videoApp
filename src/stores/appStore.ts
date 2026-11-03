@@ -26,6 +26,7 @@ import {
 import { buildFolderTree } from '@/features/catalog/folderTree'
 import { DirectLinkService } from '@/features/direct-links/directLinkService'
 import { DailyUnlockRepository } from '@/features/daily-unlock/dailyUnlockRepository'
+import { formatCourseDate, getCourseStartAt, hasCourseStarted, parseCourseDate } from '@/features/daily-unlock/courseScheduleDate'
 import {
   findCourseConflict,
   getVideoUnlockStatus,
@@ -129,10 +130,11 @@ type MockBootstrapper = (
   options?: BootstrapMocksOptions
 ) => MockBootstrapData | null
 
-export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath' | 'dailyEpisodeCount' | 'startEpisodeNumber'>
+export type CreateDailyUnlockCourseInput = Pick<DailyUnlockCourse, 'name' | 'episodes' | 'sourceFolderPath' | 'dailyEpisodeCount' | 'startEpisodeNumber' | 'startAt'>
 export interface UpdateDailyUnlockCourseInput {
   name?: string
   dailyEpisodeCount?: number
+  startAt?: number
   paused?: boolean
 }
 
@@ -622,10 +624,12 @@ export function createAppStore(
       options: { enableDailyUnlock?: boolean } = {}
     ): DailyUnlockCourseResult {
       if (!ensureLearningStorage()) return { ok: false, reason: 'storage' }
+      const now = dependencies.now()
       const name = typeof input?.name === 'string' ? input.name.trim() : ''
       if (
         !name ||
         name.length > 160 ||
+        (input.startAt !== undefined && (!isLocalCourseStart(input.startAt) || input.startAt < parseCourseDate(formatCourseDate(now))!)) ||
         (input.dailyEpisodeCount !== undefined && (!Number.isInteger(input.dailyEpisodeCount) || input.dailyEpisodeCount < 1 || input.dailyEpisodeCount > 10)) ||
         !Array.isArray(input.episodes) ||
         input.episodes.length === 0 ||
@@ -677,7 +681,8 @@ export function createAppStore(
       const course: DailyUnlockCourse = {
         id,
         name,
-        createdAt: dependencies.now(),
+        createdAt: now,
+        ...(input.startAt !== undefined ? { startAt: input.startAt } : {}),
         ...(input.dailyEpisodeCount !== undefined ? { dailyEpisodeCount: input.dailyEpisodeCount } : {}),
         ...(input.startEpisodeNumber !== undefined ? { startEpisodeNumber: input.startEpisodeNumber } : {}),
         ...(input.sourceFolderPath ? { sourceFolderPath: input.sourceFolderPath } : {}),
@@ -700,12 +705,23 @@ export function createAppStore(
 
     function updateDailyUnlockCourse(courseId: string, patch: UpdateDailyUnlockCourseInput): boolean {
       if (!ensureLearningStorage()) return false
+      const now = dependencies.now()
       const course = dailyUnlockSettings.value.courses.find((item) => item.id === courseId)
       if (!course || !patch ||
         (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.trim().length > 160)) ||
         (patch.dailyEpisodeCount !== undefined && (!Number.isInteger(patch.dailyEpisodeCount) || patch.dailyEpisodeCount < 1 || patch.dailyEpisodeCount > 10)) ||
         (patch.paused !== undefined && typeof patch.paused !== 'boolean')) return false
-      const updated = rescheduleDailyUnlockCourse(course, patch, dependencies.now())
+      const schedulePatch = { ...patch }
+      if (patch.startAt !== undefined) {
+        if (!isLocalCourseStart(patch.startAt)) return false
+        if (formatCourseDate(patch.startAt) === formatCourseDate(getCourseStartAt(course))) {
+          // Submitting an unchanged calendar date must preserve legacy timestamps and anchors.
+          delete schedulePatch.startAt
+        } else if (hasCourseStarted(course, now) || patch.startAt < parseCourseDate(formatCourseDate(now))!) {
+          return false
+        }
+      }
+      const updated = rescheduleDailyUnlockCourse(course, schedulePatch, now)
       const next = {
         ...cloneDailyUnlockSettings(dailyUnlockSettings.value),
         courses: dailyUnlockSettings.value.courses.map((item) => item.id === courseId ? updated : cloneDailyUnlockCourse(item))
@@ -1073,6 +1089,11 @@ function isValidSessionAt(
     session.scope.includes('basic') &&
     session.scope.includes('netdisk')
   )
+}
+
+function isLocalCourseStart(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 &&
+    Number.isFinite(new Date(value).getTime()) && parseCourseDate(formatCourseDate(value)) === value
 }
 
 function cloneDailyUnlockCourse(course: DailyUnlockCourse): DailyUnlockCourse {

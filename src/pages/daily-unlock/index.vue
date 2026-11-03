@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { onHide, onLoad, onUnload } from '@dcloudio/uni-app'
-import { ArrowLeft, Folder, Search } from '@/components/icons'
+import { ArrowLeft, CalendarDays, Folder, Search } from '@/components/icons'
 import VideoThumbnail from '@/components/VideoThumbnail.vue'
 
 import { getUnlockedEpisodeCount, getNextCourseUnlockAt, getTodayCourseEpisodes, rescheduleDailyUnlockCourse, snapshotCourseEpisodes } from '@/features/daily-unlock/dailyUnlockPolicy'
@@ -9,6 +9,7 @@ import { markLearningGuideCompleted, readLearningGuideStatus } from '@/features/
 import { uniStorage } from '@/infrastructure/storage'
 import { readCourseDraft, saveCourseDraft, clearCourseDraft, createDraftSaveQueue } from '@/features/daily-unlock/courseDraft'
 import { useDailyUnlockClock } from '@/features/daily-unlock/dailyUnlockClock'
+import { formatCourseDate, getCourseStartAt, hasCourseStarted, parseCourseDate } from '@/features/daily-unlock/courseScheduleDate'
 import type { DailyUnlockCourse, DailyUnlockEpisode, VideoFolder, VideoItem } from '@/domain/video'
 import { useAppStore } from '@/stores/appStore'
 
@@ -47,6 +48,8 @@ const creationOpen = ref(false)
 const showCreation = computed(() => creationOpen.value || store.dailyUnlockSettings.courses.length === 0)
 const dailyEpisodeCount = ref<number | string>(1)
 const startEpisodeNumber = ref<number | string>(1)
+const todayDate = computed(() => formatCourseDate(store.dailyUnlockNow || Date.now()))
+const startDate = ref(formatCourseDate(Date.now()))
 const draftStatus = ref('')
 function loadDraft() {
   try { return readCourseDraft(uniStorage) }
@@ -58,9 +61,9 @@ const restoredSelection = ref(false)
 const manualOrder = ref<string[]>([])
 let suppressDraftSave = false
 const courseQuery = ref('')
-type CourseFilter = 'all' | 'learning' | 'paused' | 'completed'
+type CourseFilter = 'all' | 'scheduled' | 'learning' | 'paused' | 'completed'
 const courseFilter = ref<CourseFilter>('all')
-const courseFilters: Array<{ key: CourseFilter; label: string }> = [{ key: 'all', label: '全部' }, { key: 'learning', label: '学习中' }, { key: 'paused', label: '已暂停' }, { key: 'completed', label: '已学完' }]
+const courseFilters: Array<{ key: CourseFilter; label: string }> = [{ key: 'all', label: '全部' }, { key: 'scheduled', label: '未开始' }, { key: 'learning', label: '学习中' }, { key: 'paused', label: '已暂停' }, { key: 'completed', label: '已学完' }]
 const filteredCourses = computed(() => store.dailyUnlockSettings.courses.filter((course) =>
   course.name.toLocaleLowerCase('zh-CN').includes(courseQuery.value.trim().toLocaleLowerCase('zh-CN')) &&
   (courseFilter.value === 'all' || courseStatus(course) === courseFilter.value)
@@ -138,8 +141,13 @@ const resumePreview = computed(() => {
   tomorrow.setDate(tomorrow.getDate() + 1)
   tomorrow.setHours(0, 0, 0, 0)
   return {
-    today: course.episodes.slice((course.startEpisodeNumber ?? 1) - 1, getUnlockedEpisodeCount(course, now)).filter((episode) => !completedIds.value.has(episode.videoId)),
-    tomorrow: getTodayCourseEpisodes(resumed, tomorrow.getTime())
+    today: resumed.episodes.slice((resumed.startEpisodeNumber ?? 1) - 1, getUnlockedEpisodeCount(resumed, now)).filter((episode) => !completedIds.value.has(episode.videoId)),
+    tomorrow: getTodayCourseEpisodes(resumed, tomorrow.getTime()),
+    hint: hasCourseStarted(course, now)
+      ? `暂停期间不会补放新内容，明天起按每天 ${resumed.dailyEpisodeCount ?? 1} 集继续。`
+      : hasCourseStarted(resumed, now)
+        ? `原定开始日已到，恢复后今天从第 ${resumed.startEpisodeNumber ?? 1} 集开始；暂停期间不累积新课。`
+        : `将于 ${formatCourseDate(getCourseStartAt(resumed))} 开始，每天开放 ${resumed.dailyEpisodeCount ?? 1} 集。`
   }
 })
 function previewNames(episodes: Array<{ name: string }>): string {
@@ -156,12 +164,16 @@ function confirmResume(): void {
 }
 const editName = ref('')
 const editDailyCount = ref(1)
+const editStartDate = ref('')
 const editError = ref('')
 const editSchedulePreview = computed(() => {
   const course = store.dailyUnlockSettings.courses.find(item => item.id === editingCourseId.value)
   if (!course || !validRate(editDailyCount.value)) return undefined
   const now = store.dailyUnlockNow
-  const next = rescheduleDailyUnlockCourse(course, { dailyEpisodeCount: Number(editDailyCount.value) }, now)
+  const startAt = parseCourseDate(editStartDate.value)
+  const changeDate = editStartDate.value !== formatCourseDate(getCourseStartAt(course))
+  if (changeDate && (startAt === undefined || editStartDate.value < todayDate.value || hasCourseStarted(course, now))) return undefined
+  const next = rescheduleDailyUnlockCourse(course, { dailyEpisodeCount: Number(editDailyCount.value), ...(changeDate ? { startAt } : {}) }, now)
   const tomorrow = new Date(now)
   tomorrow.setDate(tomorrow.getDate() + 1)
   tomorrow.setHours(0, 0, 0, 0)
@@ -229,18 +241,18 @@ function moveEpisode(index: number, direction: number): void {
 function persistDraft(): boolean {
   if (suppressDraftSave || pendingDraft.value) return true
   try {
-    if (!courseName.value && !episodeSnapshots.value.length && !selectedFolderPath.value && Number(dailyEpisodeCount.value) === 1 && Number(startEpisodeNumber.value) === 1) {
+    if (!courseName.value && !episodeSnapshots.value.length && !selectedFolderPath.value && Number(dailyEpisodeCount.value) === 1 && Number(startEpisodeNumber.value) === 1 && startDate.value === todayDate.value) {
       clearCourseDraft(uniStorage)
       draftStatus.value = ''
       return true
     }
-    saveCourseDraft(uniStorage, { name: courseName.value, selectionMode: selectionMode.value, sourceFolderPath: selectedFolderPath.value, episodes: episodeSnapshots.value, dailyEpisodeCount: dailyEpisodeCount.value, startEpisodeNumber: startEpisodeNumber.value })
+    saveCourseDraft(uniStorage, { name: courseName.value, selectionMode: selectionMode.value, sourceFolderPath: selectedFolderPath.value, episodes: episodeSnapshots.value, dailyEpisodeCount: dailyEpisodeCount.value, startEpisodeNumber: startEpisodeNumber.value, startDate: startDate.value })
     draftStatus.value = '草稿已自动保存，可返回后继续'
     return true
   } catch { draftStatus.value = '草稿保存失败，请重试；退出后可能无法恢复'; return false }
 }
 const draftSaveQueue = createDraftSaveQueue(persistDraft)
-watch([courseName, selectionMode, selectedFolderPath, episodeSnapshots, dailyEpisodeCount, startEpisodeNumber], () => {
+watch([courseName, selectionMode, selectedFolderPath, episodeSnapshots, dailyEpisodeCount, startEpisodeNumber, startDate], () => {
   if (suppressDraftSave || pendingDraft.value) return
   draftStatus.value = '草稿待保存…'
   draftSaveQueue.schedule()
@@ -260,6 +272,7 @@ function restoreDraft(): void {
   manualOrder.value = draft.episodes.map(episode => episode.videoId)
   dailyEpisodeCount.value = draft.dailyEpisodeCount
   startEpisodeNumber.value = draft.startEpisodeNumber
+  startDate.value = draft.startDate ?? formatCourseDate(Date.now())
   creationOpen.value = true
   orderPreviewOpen.value = true
   pendingDraft.value = undefined
@@ -272,11 +285,33 @@ function discardDraft(): void {
     draftStatus.value = '已丢弃草稿'
   } catch { draftStatus.value = '草稿删除失败，请重试' }
 }
-const schedulePreview = computed(() => [0, 1, 2].flatMap((day) => {
-  const start = Number(startEpisodeNumber.value) - 1 + day * Number(dailyEpisodeCount.value)
-  const episodes = episodeSnapshots.value.slice(start, start + Number(dailyEpisodeCount.value))
-  return episodes.length ? [{ label: ['今天', '明天', '后天'][day], names: episodes.map((episode) => episode.name).join('、') }] : []
-}))
+function scheduleDayLabel(timestamp: number): string {
+  const date = formatCourseDate(timestamp)
+  const today = parseCourseDate(todayDate.value)
+  if (today !== undefined) {
+    for (let offset = 0; offset < 3; offset += 1) {
+      const day = new Date(today)
+      day.setDate(day.getDate() + offset)
+      if (date === formatCourseDate(day.getTime())) return ['今天', '明天', '后天'][offset]!
+    }
+  }
+  return date
+}
+const startDateLabel = computed(() => {
+  const startAt = parseCourseDate(startDate.value)
+  return startAt === undefined ? '所选日期' : scheduleDayLabel(startAt)
+})
+const schedulePreview = computed(() => {
+  const startAt = parseCourseDate(startDate.value)
+  if (startAt === undefined || startDate.value < todayDate.value) return []
+  return [0, 1, 2].flatMap((day) => {
+    const start = Number(startEpisodeNumber.value) - 1 + day * Number(dailyEpisodeCount.value)
+    const episodes = episodeSnapshots.value.slice(start, start + Number(dailyEpisodeCount.value))
+    const date = new Date(startAt)
+    date.setDate(date.getDate() + day)
+    return episodes.length ? [{ label: scheduleDayLabel(date.getTime()), names: episodes.map((episode) => episode.name).join('、') }] : []
+  })
+})
 const completedIds = computed(() => new Set(store.learningHistory.filter((item) => item.completed).map((item) => item.videoId)))
 const episodeVideos = computed(() =>
   episodeSnapshots.value.slice(0, previewLimit.value).map((episode) =>
@@ -343,6 +378,11 @@ function createCourse(): void {
     showFormError('每天学习集数需为 1 到 10 的整数')
     return
   }
+  const startAt = parseCourseDate(startDate.value)
+  if (startAt === undefined || startDate.value < formatCourseDate(Date.now())) {
+    showFormError('请选择今天或之后的开始日期')
+    return
+  }
   if (!episodeSnapshots.value.length) {
     showFormError('请选择一个含视频的文件夹或至少一集视频')
     return
@@ -361,6 +401,7 @@ function createCourse(): void {
     name: courseName.value,
     dailyEpisodeCount: Number(dailyEpisodeCount.value),
     startEpisodeNumber: Number(startEpisodeNumber.value),
+    startAt,
     episodes: episodeSnapshots.value,
     ...(selectionMode.value === 'folder' && selectedFolderPath.value
       ? { sourceFolderPath: selectedFolderPath.value }
@@ -386,6 +427,7 @@ function createCourse(): void {
   courseName.value = ''
   dailyEpisodeCount.value = 1
   startEpisodeNumber.value = 1
+  startDate.value = formatCourseDate(Date.now())
   selectedFolderPath.value = ''
   selectedVideoIds.value = new Set()
   creationOpen.value = false
@@ -408,6 +450,7 @@ function startEditing(course: DailyUnlockCourse): void {
   editingCourseId.value = course.id
   editName.value = course.name
   editDailyCount.value = course.dailyEpisodeCount ?? 1
+  editStartDate.value = formatCourseDate(getCourseStartAt(course))
   editError.value = ''
 }
 
@@ -416,7 +459,19 @@ function saveEditing(): void {
     editError.value = '请填写课程名称，每天学习集数需为 1 到 10 的整数'
     return
   }
-  if (!store.updateDailyUnlockCourse(editingCourseId.value, { name: editName.value, dailyEpisodeCount: Number(editDailyCount.value) })) {
+  const course = store.dailyUnlockSettings.courses.find(item => item.id === editingCourseId.value)
+  if (!course) { editError.value = '课程不存在，请重新进入后重试'; return }
+  const changeDate = editStartDate.value !== formatCourseDate(getCourseStartAt(course))
+  const startAt = parseCourseDate(editStartDate.value)
+  if (changeDate && (startAt === undefined || editStartDate.value < formatCourseDate(Date.now()))) {
+    editError.value = '请选择今天或之后的开始日期'
+    return
+  }
+  if (changeDate && hasCourseStarted(course, Date.now())) {
+    editError.value = '课程已经开始，可暂停计划以延后后续课程'
+    return
+  }
+  if (!store.updateDailyUnlockCourse(editingCourseId.value, { name: editName.value, dailyEpisodeCount: Number(editDailyCount.value), ...(changeDate ? { startAt } : {}) })) {
     editError.value = '保存失败，请稍后重试'
     return
   }
@@ -445,7 +500,12 @@ function plannedCount(course: DailyUnlockCourse): number {
 
 function courseStatus(course: DailyUnlockCourse): Exclude<CourseFilter, 'all'> {
   if (plannedCount(course) > 0 && learnedCount(course) === plannedCount(course)) return 'completed'
-  return course.pausedAt === undefined ? 'learning' : 'paused'
+  if (course.pausedAt !== undefined) return 'paused'
+  return hasCourseStarted(course, store.dailyUnlockNow) ? 'learning' : 'scheduled'
+}
+
+function courseStatusLabel(course: DailyUnlockCourse): string {
+  return courseFilters.find(filter => filter.key === courseStatus(course))!.label
 }
 
 function beginRelink(course: DailyUnlockCourse, videoId: string, name: string): void {
@@ -533,6 +593,7 @@ function courseProgressPercent(course: DailyUnlockCourse): string {
 
 function courseNextUnlock(course: DailyUnlockCourse): string {
   if (course.pausedAt !== undefined) return '计划已暂停，已开放内容仍可学习'
+  if (!hasCourseStarted(course, store.dailyUnlockNow)) return `${formatCourseDate(getCourseStartAt(course))} 开始，届时开放首日内容`
   const next = getNextCourseUnlockAt(course, store.dailyUnlockNow)
   return next === undefined ? '课程已全部解锁' : `下一集 ${formatLocalMidnight(next)} 开放`
 }
@@ -603,7 +664,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
           <article v-for="course in visibleCourses" :key="course.id" data-testid="course-card" class="daily-course-card" :data-course-id="course.id">
             <view class="daily-course-card__top">
               <view class="daily-course-card__copy">
-                <text class="daily-course-card__name">{{ course.name }}</text>
+                <view class="daily-course-title"><text class="daily-course-card__name">{{ course.name }}</text><text class="daily-course-status" :class="`daily-course-status--${courseStatus(course)}`" data-testid="course-status">{{ courseStatusLabel(course) }}</text></view>
                 <text class="daily-course-card__progress">{{ courseProgress(course) }}</text>
                 <text class="daily-course-card__progress">已学完 {{ learnedCount(course) }} / {{ plannedCount(course) }} 集 · 每天 {{ course.dailyEpisodeCount ?? 1 }} 集</text>
                 <text v-if="(course.startEpisodeNumber ?? 1) > 1" class="daily-plan-hint">从第 {{ course.startEpisodeNumber }} 集开始；此前内容可复习，不计入本计划</text>
@@ -614,7 +675,7 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               </view>
             </view>
             <view class="daily-course-actions">
-              <button class="daily-text-action" data-testid="pause-course" @click="togglePause(course)">{{ course.pausedAt === undefined ? '暂停计划' : '恢复计划' }}</button>
+              <button class="daily-text-action daily-pause-action" data-testid="pause-course" @click="togglePause(course)">{{ course.pausedAt === undefined ? '暂停计划' : '恢复计划' }}</button>
               <button class="daily-text-action" data-testid="course-more" :aria-expanded="moreCourseId === course.id" @click="moreCourseId = moreCourseId === course.id ? '' : course.id">更多操作</button>
             </view>
             <view v-if="moreCourseId === course.id" class="daily-course-actions daily-more" role="group" aria-label="课程更多操作">
@@ -636,14 +697,20 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
               <text class="daily-plan-hint">{{ previewNames(resumePreview.today) }}</text>
               <text>明天新开放：{{ resumePreview.tomorrow.length }} 集</text>
               <text class="daily-plan-hint">{{ previewNames(resumePreview.tomorrow) }}</text>
-              <text class="daily-plan-hint">暂停期间不会补放新内容，明天起按每天 {{ course.dailyEpisodeCount ?? 1 }} 集继续。</text>
+              <text class="daily-plan-hint">{{ resumePreview.hint }}</text>
               <text v-if="resumeError" class="daily-form-error" role="alert">{{ resumeError }}</text>
               <view class="daily-course-actions"><button class="daily-text-action" data-testid="resume-confirm" @click="confirmResume">确认恢复</button><button class="daily-text-action" data-testid="resume-cancel" @click="resumeCourseId = ''">暂不恢复</button></view>
             </view>
             <view v-if="editingCourseId === course.id" class="daily-edit" data-testid="course-edit">
               <label class="daily-field"><text>课程名称</text><input v-model="editName" maxlength="80" data-testid="edit-course-name" /></label>
               <label class="daily-field"><text>每天学习集数（1–10）</text><input v-model="editDailyCount" type="number" data-testid="edit-course-count" /></label>
-              <text class="daily-plan-hint">调整集数从明天生效，已开放内容和今天的安排保留。恢复暂停的计划后，明天继续开放新内容。</text>
+              <view v-if="!hasCourseStarted(course, store.dailyUnlockNow)" class="daily-field">
+                <text>开始日期</text>
+                <picker mode="date" :value="editStartDate" :start="todayDate" :end="'2099-12-31'" data-testid="edit-course-start-date" @change="editStartDate = $event.detail.value; editError = ''">
+                  <button type="button" class="daily-date-button" aria-label="修改开始日期"><CalendarDays :size="18" aria-hidden="true" /><text>{{ editStartDate }}</text><text class="daily-date-button__hint">选择日期</text></button>
+                </picker>
+              </view>
+              <text class="daily-plan-hint">{{ hasCourseStarted(course, store.dailyUnlockNow) ? '课程已开始，如需延后后续课程可暂停计划。调整每天集数从明天生效，已开放内容和今天的安排保留。' : '到开始日才开放首日内容；暂停期间不开放新课，已有学习记录保留。' }}</text>
               <view v-if="editSchedulePreview" class="daily-schedule-preview" aria-live="polite">
                 <text data-testid="edit-today-preview">今天保持：{{ previewNames(editSchedulePreview.today) }}</text>
                 <text data-testid="edit-tomorrow-preview">明天安排：{{ editSchedulePreview.paused ? '计划已暂停，暂不开放新内容' : previewNames(editSchedulePreview.tomorrow) }}</text>
@@ -698,7 +765,14 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
           <input v-model="dailyEpisodeCount" type="number" data-testid="daily-episode-count" aria-label="每天学习集数" />
         </label>
         <label class="daily-field daily-rate-field"><text>从第几集开始</text><input v-model="startEpisodeNumber" type="number" data-testid="start-episode-number" aria-label="起始集数" /></label>
-        <text class="daily-plan-hint">今天从第 {{ startEpisodeNumber || 1 }} 集开始，每天开放 {{ dailyEpisodeCount || 1 }} 集；之前的内容可复习，不加入待补学，也不会自动标记学完。</text>
+        <view class="daily-field">
+          <text>开始日期</text>
+          <picker mode="date" :value="startDate" :start="todayDate" :end="'2099-12-31'" data-testid="course-start-date" @change="startDate = $event.detail.value; formError = ''">
+            <button type="button" class="daily-date-button" aria-label="选择开始日期"><CalendarDays :size="18" aria-hidden="true" /><text>{{ startDate }}<text v-if="startDate === todayDate">（今天）</text></text><text class="daily-date-button__hint">选择日期</text></button>
+          </picker>
+        </view>
+        <text v-if="startDate < todayDate" class="daily-form-error">原选开始日期已过，请重新选择开始日期。</text>
+        <text class="daily-plan-hint">{{ startDateLabel }}从第 {{ startEpisodeNumber || 1 }} 集开始，每天开放 {{ dailyEpisodeCount || 1 }} 集；之前的内容可复习，不加入待补学，也不会自动标记学完。课程可随时暂停。</text>
 
         <view class="daily-mode" role="group" aria-label="课程内容来源">
           <button type="button" data-testid="mode-folder" :aria-pressed="selectionMode === 'folder'" :class="{ 'daily-mode__button--active': selectionMode === 'folder' }" @click="setSelectionMode('folder')">按文件夹</button>
@@ -950,6 +1024,32 @@ function findFolder(root: VideoFolder, path: string): VideoFolder | undefined {
   border-color: $color-primary;
   outline: 2px solid rgba($color-primary, 0.14);
 }
+
+.daily-date-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin: 8rpx 0 0;
+  padding: 12rpx 18rpx;
+  border: 1px solid $color-border;
+  border-radius: 11px;
+  background: $color-bg;
+  color: $color-text;
+  font-size: 23rpx;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  text-align: left;
+}
+.daily-date-button > text { margin-left: 12rpx; }
+.daily-date-button .daily-date-button__hint { margin-left: auto; padding-left: 12rpx; color: $color-primary; }
+.daily-course-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10rpx; }
+.daily-course-status { flex-shrink: 0; border-radius: 6px; padding: 5rpx 12rpx; font-size: 20rpx; line-height: 1.4; background: $color-primary-soft; color: $color-primary; }
+.daily-course-status--paused, .daily-course-status--scheduled { background: #efede5; color: $color-muted; }
+.daily-course-actions .daily-pause-action { padding-left: 18rpx; padding-right: 18rpx; border: 1px solid $color-border; border-radius: 9px; background: $color-primary-soft; }
 
 .daily-mode {
   box-sizing: border-box;

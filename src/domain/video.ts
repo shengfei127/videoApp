@@ -40,6 +40,7 @@ export interface DailyUnlockCourse {
   id: string
   name: string
   createdAt: number
+  startAt?: number
   sourceFolderPath?: string
   episodes: DailyUnlockEpisode[]
   dailyEpisodeCount?: number

@@ -18,6 +18,18 @@ function populatedStorage() {
 }
 
 describe('learning backup', () => {
+  it('restores future start dates and paused scheduling without changing playback history', () => {
+    const source = populatedStorage()
+    const settings = source.read<any>(DAILY_UNLOCK_STORAGE_KEY, null)
+    Object.assign(settings.courses[0], { startAt: new Date(2026, 10, 8).getTime(), pausedAt: new Date(2026, 10, 3, 12).getTime() })
+    source.write(DAILY_UNLOCK_STORAGE_KEY, settings)
+    const target = createMemoryStorage()
+    restoreLearningBackup(target, parseLearningBackup(exportLearningBackup(source, 500)))
+    expect(target.read(DAILY_UNLOCK_STORAGE_KEY, null)).toEqual(settings)
+    expect(target.read(PROGRESS_STORAGE_KEY, null)).toEqual(source.read(PROGRESS_STORAGE_KEY, null))
+    expect(target.read(LEARNING_STORAGE_KEY, null)).toEqual(source.read(LEARNING_STORAGE_KEY, null))
+  })
+
   it('round trips Unicode plans, starting episode, actual progress, and unknown-duration learning without source secrets', () => {
     const source = populatedStorage()
     const serialized = exportLearningBackup(source, 500)
@@ -43,6 +55,8 @@ describe('learning backup', () => {
     (data: any) => { data.courses.courses[0].episodes[0].path = 'https://private.test/video' },
     (data: any) => { data.courses.courses[0].episodes[1].path = '/../invalid' },
     (data: any) => { data.courses.courses[0].startEpisodeNumber = 100 },
+    (data: any) => { data.courses.courses[0].startAt = -1 },
+    (data: any) => { data.courses.courses[0].startAt = '2026-11-08' },
     (data: any) => { data.courses.courses.push(data.courses.courses[0]) },
     (data: any) => { data.playback.push(data.playback[0]) },
     (data: any) => { data.playback[0].positionSeconds = 1000 },

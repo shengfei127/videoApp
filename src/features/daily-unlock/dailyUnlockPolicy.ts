@@ -5,6 +5,7 @@ import type {
   VideoItem,
   VideoUnlockStatus
 } from '@/domain/video'
+import { getCourseStartAt, hasCourseStarted } from './courseScheduleDate'
 
 // Android's App service engine can omit Intl entirely.
 const NATURAL_COLLATOR = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
@@ -47,8 +48,11 @@ export function getUnlockedEpisodeCount(
     return 0
   }
 
+  if (!hasCourseStarted(course, now)) {
+    return Math.min(course.episodes.length, Math.max(0, (course.startEpisodeNumber ?? 1) - 1))
+  }
   const effectiveNow = course.pausedAt === undefined ? now : Math.min(now, course.pausedAt)
-  const createdDay = localDayOrdinal(course.scheduleAnchorAt ?? course.createdAt)
+  const createdDay = localDayOrdinal(course.scheduleAnchorAt ?? getCourseStartAt(course))
   const currentDay = localDayOrdinal(effectiveNow)
   const elapsedDays = currentDay - createdDay
   const count = course.scheduleAnchorAt === undefined
@@ -65,7 +69,7 @@ export function getTodayCourseEpisode(course: DailyUnlockCourse, now: number): D
 }
 
 export function getTodayCourseEpisodes(course: DailyUnlockCourse, now: number): DailyUnlockEpisode[] {
-  if (course.pausedAt !== undefined || !Number.isFinite(now) || now < course.createdAt) return []
+  if (course.pausedAt !== undefined || !Number.isFinite(now) || now < course.createdAt || !hasCourseStarted(course, now)) return []
   const end = getUnlockedEpisodeCount(course, now)
   const start = course.scheduleAnchorAt !== undefined && localDayOrdinal(now) === localDayOrdinal(course.scheduleAnchorAt)
     ? course.scheduleAnchorTodayStart ?? end
@@ -75,10 +79,25 @@ export function getTodayCourseEpisodes(course: DailyUnlockCourse, now: number): 
 
 export function rescheduleDailyUnlockCourse(
   course: DailyUnlockCourse,
-  patch: { name?: string; dailyEpisodeCount?: number; paused?: boolean },
+  patch: { name?: string; dailyEpisodeCount?: number; paused?: boolean; startAt?: number },
   now: number
 ): DailyUnlockCourse {
   const next = { ...course, ...(patch.name !== undefined ? { name: patch.name.trim() } : {}) }
+  if (!hasCourseStarted(course, now)) {
+    if (patch.startAt !== undefined) next.startAt = patch.startAt
+    if (patch.dailyEpisodeCount !== undefined) next.dailyEpisodeCount = patch.dailyEpisodeCount
+    if (patch.paused === true) {
+      next.pausedAt = course.pausedAt ?? now
+    } else if (patch.paused === false && course.pausedAt !== undefined) {
+      delete next.pausedAt
+      // A pre-start pause never releases lessons. If its date has passed,
+      // resume with the first batch today instead of accumulating missed days.
+      if (localDayOrdinal(now) > localDayOrdinal(getCourseStartAt(next))) {
+        next.startAt = localMidnightAfter(now, 0)
+      }
+    }
+    return next
+  }
   const rateChanged = patch.dailyEpisodeCount !== undefined && patch.dailyEpisodeCount !== dailyRate(course)
   const pauseChanged = patch.paused !== undefined && patch.paused !== (course.pausedAt !== undefined)
   if (!rateChanged && !pauseChanged) return next
@@ -102,7 +121,7 @@ function episodeUnlockAt(course: DailyUnlockCourse, index: number): number {
     const remainingIndex = index - (course.scheduleAnchorUnlockedCount ?? 0)
     return localMidnightAfter(course.scheduleAnchorAt, Math.floor(remainingIndex / dailyRate(course)) + 1)
   }
-  return localMidnightAfter(course.createdAt, Math.floor((index - ((course.startEpisodeNumber ?? 1) - 1)) / dailyRate(course)))
+  return localMidnightAfter(getCourseStartAt(course), Math.floor((index - ((course.startEpisodeNumber ?? 1) - 1)) / dailyRate(course)))
 }
 
 export function getVideoUnlockStatus(

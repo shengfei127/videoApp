@@ -19,6 +19,33 @@ const validCourse: DailyUnlockCourse = {
 }
 
 describe('DailyUnlockRepository', () => {
+  it('round trips a selected start date and keeps legacy courses without a date unchanged', () => {
+    const storage = createMemoryStorage()
+    const repository = new DailyUnlockRepository(storage)
+    const course = { ...validCourse, startAt: new Date(2026, 10, 8).getTime() }
+    repository.save({ enabled: true, courses: [course] })
+    expect(repository.load().courses).toEqual([course])
+    repository.save({ enabled: true, courses: [validCourse] })
+    expect(repository.load().courses).toEqual([validCourse])
+  })
+
+  it.each([-1, NaN, Infinity, 8_640_000_000_000_001, 1.5, '2026-11-08', null])('rejects an invalid selected start timestamp (%s)', (startAt) => {
+    const storage = createMemoryStorage()
+    const repository = new DailyUnlockRepository(storage)
+    const settings = { enabled: true, courses: [{ ...validCourse, startAt }] } as unknown as DailyUnlockSettings
+    expect(() => repository.save(settings)).toThrow('每日课程信息无效')
+    storage.write(DAILY_UNLOCK_STORAGE_KEY, settings)
+    expect(repository.load().courses).toEqual([])
+  })
+
+  it('preserves start timestamps when restoring on a device in another timezone', () => {
+    const storage = createMemoryStorage()
+    const repository = new DailyUnlockRepository(storage)
+    const course = { ...validCourse, startAt: Date.UTC(2026, 10, 8, 5) }
+    repository.save({ enabled: true, courses: [course] })
+    expect(repository.load().courses).toEqual([course])
+  })
+
   it('persists scheduling changes and rejects incomplete or invalid schedule fields', () => {
     const storage = createMemoryStorage()
     const repository = new DailyUnlockRepository(storage)

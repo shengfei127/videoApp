@@ -23,6 +23,31 @@ function progress(videoId: string, completed: boolean, positionSeconds = 120, du
 }
 
 describe('learning plan', () => {
+  it('does not create catch-up lessons before the chosen start date and previews the first day', () => {
+    const scheduled = { ...course(6, 2), startAt: new Date(2026, 9, 30).getTime(), startEpisodeNumber: 3 }
+    const settings = { enabled: true, courses: [scheduled] }
+    expect(buildLearningPlan(settings, day(0), [], [])).toEqual({ today: [], backlog: [], tomorrow: [] })
+    const eve = buildLearningPlan(settings, day(2), [], [])
+    expect(eve.today).toEqual([])
+    expect(eve.backlog).toEqual([])
+    expect(eve.tomorrow.map((item) => item.id)).toEqual(['video-3', 'video-4'])
+    const firstDay = buildLearningPlan(settings, day(3), [], [])
+    expect(firstDay.today.map((item) => item.id)).toEqual(['video-3', 'video-4'])
+    expect(firstDay.backlog).toEqual([])
+  })
+
+  it('adds no backlog for a course paused before its start and resumes from the first planned lesson', () => {
+    const scheduled = { ...course(), startAt: new Date(2026, 9, 30).getTime() }
+    const paused = rescheduleDailyUnlockCourse(scheduled, { paused: true }, day(1))
+    expect(buildLearningPlan({ enabled: true, courses: [paused] }, day(10), [], []))
+      .toEqual({ today: [], backlog: [], tomorrow: [] })
+    const resumed = rescheduleDailyUnlockCourse(paused, { paused: false }, day(10))
+    const plan = buildLearningPlan({ enabled: true, courses: [resumed] }, day(10), [], [])
+    expect(plan.today.map((item) => item.id)).toEqual(['video-1'])
+    expect(plan.backlog).toEqual([])
+    expect(plan.tomorrow.map((item) => item.id)).toEqual(['video-2'])
+  })
+
   it('starts from the chosen episode without treating earlier episodes as missed or completed', () => {
     const settings = { enabled: true, courses: [{ ...course(6), startEpisodeNumber: 3 }] }
     const first = buildLearningPlan(settings, day(0), [], [])

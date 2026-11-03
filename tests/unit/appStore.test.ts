@@ -693,6 +693,98 @@ describe('app store sync state transitions', () => {
 })
 
 describe('app store daily unlock settings', () => {
+  function scheduleDay(offset = 0): number {
+    const now = new Date(NOW)
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime()
+  }
+
+  const scheduleEpisodes = [
+    { videoId: 'direct:first', name: '第一集', sourceType: 'direct' as const },
+    { videoId: 'direct:second', name: '第二集', sourceType: 'direct' as const }
+  ]
+
+  it('persists a future start date independently of creation and opens its first lesson on that day', async () => {
+    const context = createTestContext('future-start-date')
+    await context.store.initialize()
+    const result = context.store.createDailyUnlockCourse({ name: '课程', startAt: scheduleDay(3), episodes: scheduleEpisodes })
+    if (!result.ok) throw new Error('create failed')
+    expect(result.course).toMatchObject({ startAt: scheduleDay(3), createdAt: NOW })
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]).toEqual(result.course)
+    context.store.setDailyUnlockEnabled(true)
+    expect(context.store.videoUnlockStatus('direct:first')).toMatchObject({ locked: true, unlockAt: scheduleDay(3) })
+    context.advance(scheduleDay(3) - NOW)
+    context.store.refreshDailyUnlockClock()
+    expect(context.store.videoUnlockStatus('direct:first').locked).toBe(false)
+    expect(context.store.videoUnlockStatus('direct:second').locked).toBe(true)
+  })
+
+  it.each([scheduleDay(-1), scheduleDay(1) + 1, NaN, Infinity, -1, '2026-11-08', null])('refuses invalid or past creation dates without persisting a course (%s)', async (startAt) => {
+    const context = createTestContext(`invalid-start-date-${String(startAt)}`)
+    await context.store.initialize()
+    expect(context.store.createDailyUnlockCourse({ name: '课程', startAt, episodes: scheduleEpisodes } as any)).toEqual({ ok: false, reason: 'invalid' })
+    expect(context.store.dailyUnlockSettings.courses).toEqual([])
+    expect(new DailyUnlockRepository(context.storage).load().courses).toEqual([])
+  })
+
+  it('changes a future course date, allows an unchanged legacy date, and refuses moving an active course', async () => {
+    const context = createTestContext('edit-start-date')
+    await context.store.initialize()
+    const future = context.store.createDailyUnlockCourse({ name: '课程', startAt: scheduleDay(3), episodes: scheduleEpisodes })
+    if (!future.ok) throw new Error('create failed')
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(5) })).toBe(true)
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]?.startAt).toBe(scheduleDay(5))
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(-1) })).toBe(false)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(5) + 1 })).toBe(false)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay() })).toBe(true)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(2) })).toBe(false)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { paused: true })).toBe(true)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(2) })).toBe(false)
+    context.advance(86_400_000)
+    expect(context.store.updateDailyUnlockCourse(future.course.id, { startAt: scheduleDay(), name: '保留日期' })).toBe(true)
+    const legacy = createTestContext('unchanged-legacy-start-date')
+    await legacy.store.initialize()
+    const created = legacy.store.createDailyUnlockCourse({ name: '旧课程', episodes: scheduleEpisodes })
+    if (!created.ok) throw new Error('create failed')
+    legacy.advance(86_400_000)
+    expect(legacy.store.updateDailyUnlockCourse(created.course.id, { startAt: scheduleDay(), name: '更新名称' })).toBe(true)
+    expect(legacy.store.dailyUnlockSettings.courses[0]?.startAt).toBeUndefined()
+  })
+
+  it('preserves date and pause state after a failed write and permits retry', async () => {
+    const context = createTestContext('start-date-write-failure')
+    await context.store.initialize()
+    const result = context.store.createDailyUnlockCourse({ name: '课程', startAt: scheduleDay(3), episodes: scheduleEpisodes })
+    if (!result.ok) throw new Error('create failed')
+    const confirmed = JSON.parse(JSON.stringify(context.store.dailyUnlockSettings))
+    const fail = vi.spyOn(context.storage, 'write').mockImplementationOnce(() => { throw new Error('disk full') })
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { startAt: scheduleDay(4), paused: true })).toBe(false)
+    expect(context.store.dailyUnlockSettings).toEqual(confirmed)
+    expect(new DailyUnlockRepository(context.storage).load()).toEqual(confirmed)
+    fail.mockRestore()
+    expect(context.store.updateDailyUnlockCourse(result.course.id, { startAt: scheduleDay(4), paused: true })).toBe(true)
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]).toMatchObject({ startAt: scheduleDay(4), pausedAt: NOW })
+  })
+
+  it('restores a pre-start pause after restart and starts on the resume day without accumulating missed lessons', async () => {
+    const context = createTestContext('future-start-pause-restart')
+    await context.store.initialize()
+    const created = context.store.createDailyUnlockCourse({ name: '课程', startAt: scheduleDay(2), episodes: scheduleEpisodes })
+    if (!created.ok) throw new Error('create failed')
+    context.progressRepository.save('direct:first', 120, 600, NOW)
+    const progress = context.progressRepository.listHistory()
+    context.store.setDailyUnlockEnabled(true)
+    expect(context.store.updateDailyUnlockCourse(created.course.id, { paused: true })).toBe(true)
+    const restored = createTestContext('future-start-pause-restored', { dailyUnlockRepository: new DailyUnlockRepository(context.storage) })
+    restored.advance(5 * 86_400_000)
+    await restored.store.initialize()
+    expect(restored.store.videoUnlockStatus('direct:first').locked).toBe(true)
+    expect(restored.store.updateDailyUnlockCourse(created.course.id, { paused: false })).toBe(true)
+    expect(restored.store.videoUnlockStatus('direct:first').locked).toBe(false)
+    expect(restored.store.videoUnlockStatus('direct:second').locked).toBe(true)
+    expect(new DailyUnlockRepository(context.storage).load().courses[0]).toMatchObject({ startAt: scheduleDay(5) })
+    expect(context.progressRepository.listHistory()).toEqual(progress)
+  })
+
   it('persists starting episode and restores a deleted course without changing its schedule', async () => {
     const context = createTestContext('start-and-restore')
     await context.store.initialize()

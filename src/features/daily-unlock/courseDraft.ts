@@ -1,5 +1,6 @@
 import type { DailyUnlockEpisode } from '@/domain/video'
 import type { KeyValueStorage } from '@/infrastructure/storage'
+import { parseCourseDate } from './courseScheduleDate'
 
 export const COURSE_DRAFT_KEY = 'pianke:course-draft:v1'
 export interface CourseDraft {
@@ -9,6 +10,7 @@ export interface CourseDraft {
   episodes: DailyUnlockEpisode[]
   dailyEpisodeCount: number | string
   startEpisodeNumber: number | string
+  startDate?: string
 }
 
 export function readCourseDraft(storage: KeyValueStorage): CourseDraft | undefined {
@@ -49,6 +51,7 @@ function sanitizeDraft(value: unknown): CourseDraft | undefined {
     (value.selectionMode !== 'folder' && value.selectionMode !== 'videos') ||
     (value.sourceFolderPath !== '' && !isSafePath(value.sourceFolderPath)) ||
     !isNumericInput(value.dailyEpisodeCount) || !isNumericInput(value.startEpisodeNumber) ||
+    (value.startDate !== undefined && (typeof value.startDate !== 'string' || parseCourseDate(value.startDate) === undefined)) ||
     !Array.isArray(value.episodes) || value.episodes.length > 500) return undefined
 
   const episodes: DailyUnlockEpisode[] = []
@@ -68,6 +71,7 @@ function sanitizeDraft(value: unknown): CourseDraft | undefined {
     name: value.name, selectionMode: value.selectionMode,
     sourceFolderPath: value.sourceFolderPath as string,
     dailyEpisodeCount: value.dailyEpisodeCount, startEpisodeNumber: value.startEpisodeNumber,
+    ...(value.startDate !== undefined ? { startDate: value.startDate as string } : {}),
     episodes
   }
 }

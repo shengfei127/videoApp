@@ -2,8 +2,8 @@
     "name" : "片刻",
     "appid" : "__UNI__8831D47",
     "description" : "Pianke Android video player",
-    "versionName" : "1.0.12",
-    "versionCode" : 112,
+    "versionName" : "1.0.13",
+    "versionCode" : 113,
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,
